@@ -1,20 +1,500 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Flask App</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Font Extractor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600&family=Inter:wght@400;500;600&family=Roboto+Mono:wght@500&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <style>
+    body {
+      animation: gradientShift 20s ease infinite;
+      background-size: 300% 300%;
+    }
+
+    @keyframes gradientShift {
+      0% { background: linear-gradient(135deg, #d1e7ff, #e0d4ff, #ffd4e6, #d4f4ff); }
+      25% { background: linear-gradient(135deg, #d4f4ff, #d1e7ff, #e0d4ff, #ffd4e6); }
+      50% { background: linear-gradient(135deg, #ffd4e6, #d4f4ff, #d1e7ff, #e0d4ff); }
+      75% { background: linear-gradient(135deg, #e0d4ff, #ffd4e6, #d4f4ff, #d1e7ff); }
+      100% { background: linear-gradient(135deg, #d1e7ff, #e0d4ff, #ffd4e6, #d4f4ff); }
+    }
+
+    .glass-container {
+      background: rgba(255, 255, 255, 0.2);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+    }
+
+    button {
+      transition: all 0.3s ease;
+    }
+
+    button:hover {
+      transform: scale(1.05);
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    }
+
+    input:focus {
+      box-shadow: 0 0 10px rgba(124, 58, 237, 0.5);
+      transform: scale(1.02);
+      transition: all 0.2s ease;
+    }
+
+    tr {
+      animation: fadeInRow 0.5s ease-in;
+    }
+
+    @keyframes fadeInRow {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .loader-spinner {
+      background: linear-gradient(45deg, #7c3aed, #db2777, #06b6d4, #7c3aed);
+      background-size: 400%;
+      animation: colorSpin 4s linear infinite;
+    }
+
+    @keyframes colorSpin {
+      0% { background-position: 0% 50%; }
+      100% { background-position: 400% 50%; }
+    }
+
+    #font-table th,
+    #font-table td {
+      min-width: 150px;
+      max-width: 300px;
+      overflow-wrap: break-word;
+      word-break: break-word;
+      white-space: normal;
+      padding: 12px;
+      vertical-align: top;
+    }
+
+    #font-table th {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: linear-gradient(to right, #4f46e5, #7c3aed);
+      color: white;
+      font-weight: bold;
+    }
+
+    #font-table tbody tr:hover {
+      background-color: rgba(219, 234, 254, 0.8);
+      transition: background-color 0.3s ease;
+    }
+
+    .license-link {
+      color: #4f46e5;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+
+    .license-link:hover {
+      color: #7c3aed;
+    }
+
+    /* Modal Styles */
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 100;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      background-color: rgba(0, 0, 0, 0.6);
+    }
+
+    .modal-content {
+      background-color: white;
+      margin: 15% auto;
+      padding: 20px;
+      border-radius: 10px;
+      width: 80%;
+      max-width: 600px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    }
+
+    .close {
+      color: #aaa;
+      float: right;
+      font-size: 28px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .close:hover,
+    .close:focus {
+      color: #000;
+      text-decoration: none;
+    }
+  </style>
 </head>
-<body>
-    <h1>Welcome to My Flask App</h1>
-    <button onclick="fetchData()">Fetch API Data</button>
-    <p id="api-response"></p>
-    <script>
-        async function fetchData() {
-            const response = await fetch('/api/data');
-            const data = await response.json();
-            document.getElementById('api-response').innerText = data.message;
+<body class="font-inter min-h-screen flex flex-col items-center justify-center p-4">
+  <div class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 hidden" id="loader">
+    <div class="relative">
+      <div class="w-16 h-16 animate-spin">
+        <div class="absolute inset-0 loader-spinner rounded-full opacity-90 border-2 border-white shadow-lg"></div>
+      </div>
+      <div class="mt-4 text-white text-lg font-roboto-mono text-center animate-pulse" id="loader-text">Processing...</div>
+    </div>
+  </div>
+
+  <div class="glass-container max-w-4xl w-full rounded-xl p-6">
+    <h2 class="text-3xl font-poppins font-bold text-purple-800 text-center mb-6">Font Extractor</h2>
+    <form id="upload-form" enctype="multipart/form-data">
+      <label for="url" class="block mb-2 font-medium text-gray-800">Single URL (optional):</label>
+      <input type="text" id="url" name="url" placeholder="https://example.com" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 hover:border-purple-400 transition mb-4 bg-white bg-opacity-80"/>
+
+      <div class="text-red-500 text-sm mt-1 hidden" id="url-error"></div>
+
+      <label for="excel-file" class="block mb-2 font-medium text-gray-800">Excel File (optional, must have 'Company' and 'Website' columns):</label>
+      <input type="file" id="excel-file" name="excel-file" accept=".xlsx, .xls" class="w-full p-3 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-purple-500 hover:border-purple-400 transition mb-4 bg-white bg-opacity-80"/>
+
+      <div class="text-red-500 text-sm mt-1 hidden" id="file-error"></div>
+
+      <div class="flex justify-center gap-3">
+        <button type="submit" class="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-6 py-2.5 rounded-lg hover:from-blue-700 hover:to-indigo-700 transition font-medium">Upload</button>
+        <button type="button" class="bg-gradient-to-r from-gray-600 to-gray-700 text-white px-6 py-2.5 rounded-lg hover:from-gray-700 hover:to-gray-800 transition font-medium" onclick="clearResults()">Clear</button>
+        <button type="button" class="bg-gradient-to-r from-orange-600 to-yellow-600 text-white px-6 py-2.5 rounded-lg hover:from-orange-700 hover:to-yellow-700 transition font-medium" onclick="confirmClearCache()">Clear Cache</button>
+        <a href="{{ url_for('main.logout') }}">
+          <button type="button" class="bg-gradient-to-r from-red-600 to-pink-600 text-white px-6 py-2.5 rounded-lg hover:from-red-700 hover:to-pink-700 transition font-medium">Logout</button>
+        </a>
+      </div>
+    </form>
+
+    <div class="text-center text-gray-700 italic mt-4 hidden" id="placeholder-text">
+      Upload a URL or Excel file to see extracted font data.
+    </div>
+
+    <div id="url-list" class="mt-6 text-gray-800">
+      <div class="text-gray-700 italic">No URLs processed yet. Submit a URL or file to see results.</div>
+    </div>
+
+    <div id="download-section" class="text-center mt-4 hidden">
+      <button id="download-btn" class="bg-gradient-to-r from-green-600 to-teal-600 text-white px-6 py-2.5 rounded-lg hover:from-green-700 hover:to-teal-700 transition font-medium" onclick="downloadExcel()">Download Excel File</button>
+    </div>
+  </div>
+
+  <div class="w-full max-w-8xl mt-6 hidden" id="table-section">
+    <h2 class="text-3xl font-poppins font-bold text-purple-800 text-center mb-4">Extracted Font Data</h2>
+    <div class="glass-container rounded-xl overflow-x-auto max-h-[500px] overflow-y-auto">
+      <table id="font-table" class="w-full border-collapse">
+        <thead>
+          <tr>
+            <th>Company</th>
+            <th>Website URL</th>
+            <th>Total Fonts</th>
+            <th>Font Name(s)</th>
+            <th>Family</th>
+            <th>Subfamily</th>
+            <th>Weight</th>
+            <th>Designer</th>
+            <th>Manufacturer</th>
+            <th>Copyright</th>
+            <th>Font URL</th>
+            <th>License Type</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody id="font-table-body" class="text-gray-800">
+          <!-- Table body will be populated dynamically -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Modal for License Type -->
+  <div id="license-modal" class="modal">
+    <div class="modal-content">
+      <span class="close">&times;</span>
+      <h2 class="text-xl font-poppins font-bold text-purple-800 mb-4">Full License Type</h2>
+      <p id="license-content" class="text-gray-800"></p>
+    </div>
+  </div>
+
+  <script>
+    // Validate URL
+    function isValidUrl(url) {
+      const pattern = /^https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)$/;
+      return pattern.test(url);
+    }
+
+    // Show error message
+    function showError(elementId, message) {
+      const errorElement = document.getElementById(elementId);
+      errorElement.textContent = message;
+      errorElement.classList.remove('hidden');
+    }
+
+    // Hide error message
+    function hideError(elementId) {
+      const errorElement = document.getElementById(elementId);
+      errorElement.classList.add('hidden');
+    }
+
+    // Clear results
+    function clearResults() {
+      document.getElementById("upload-form").reset();
+      document.getElementById("url-list").innerHTML = "<div class='text-gray-700 italic'>No URLs processed yet. Submit a URL or file to see results.</div>";
+      document.getElementById("download-section").classList.add("hidden");
+      const tableSection = document.getElementById("table-section");
+      const tableBody = document.getElementById("font-table-body");
+      tableBody.innerHTML = "";
+      tableSection.classList.add("hidden");
+      document.getElementById("placeholder-text").classList.remove("hidden");
+      hideError("url-error");
+      hideError("file-error");
+      document.getElementById("loader-text").textContent = "Processing...";
+    }
+
+    // Confirm and clear cache
+    function confirmClearCache() {
+      if (confirm("Are you sure you want to clear the cache? This cannot be undone.")) {
+        clearCache();
+      }
+    }
+
+    // Clear cache
+    async function clearCache() {
+      const loader = document.getElementById("loader");
+      const errorElement = document.getElementById("file-error");
+
+      errorElement.classList.add("hidden");
+      loader.classList.remove("hidden");
+      document.getElementById("loader-text").textContent = "Clearing cache...";
+
+      try {
+        const response = await fetch('/clear-cache', {
+          method: 'POST'
+        });
+        const result = await response.json();
+
+        loader.classList.add("hidden");
+
+        if (result.status === "success") {
+          showError("file-error", result.message);
+          errorElement.classList.remove("text-red-500");
+          errorElement.classList.add("text-green-500");
+        } else {
+          showError("file-error", result.message);
         }
-    </script>
+      } catch (err) {
+        loader.classList.add("hidden");
+        showError("file-error", "An error occurred while clearing the cache: " + err.message);
+      }
+    }
+
+    // Download Excel file
+    async function downloadExcel() {
+      const loader = document.getElementById("loader");
+      const errorElement = document.getElementById("file-error");
+
+      errorElement.classList.add("hidden");
+      loader.classList.remove("hidden");
+      document.getElementById("loader-text").textContent = "Generating Excel file...";
+
+      try {
+        const response = await fetch('/download-excel', {
+          method: 'POST'
+        });
+
+        if (response.ok) {
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'font_metadata.xlsx';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.URL.revokeObjectURL(url);
+        } else {
+          const result = await response.json();
+          showError("file-error", result.message);
+        }
+      } catch (err) {
+        showError("file-error", "An error occurred while downloading the Excel file: " + err.message);
+      } finally {
+        loader.classList.add("hidden");
+      }
+    }
+
+    // WebSocket for progress updates
+    let ws = null;
+    function connectWebSocket() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        return; // WebSocket already open
+      }
+      ws = new WebSocket(`ws://${window.location.host}/ws`);
+      ws.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        if (data.message) {
+          document.getElementById("loader-text").textContent = data.message;
+        }
+      };
+      ws.onclose = function() {
+        ws = null; // Reset WebSocket on close
+      };
+    }
+
+    function closeWebSocket() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+        ws = null;
+      }
+    }
+
+    // Modal functions
+    const modal = document.getElementById("license-modal");
+    const licenseContent = document.getElementById("license-content");
+    const closeBtn = document.getElementsByClassName("close")[0];
+
+    function openModal(licenseText) {
+      console.log("Opening modal with license text:", licenseText);
+      licenseContent.textContent = licenseText || '-';
+      modal.style.display = "block";
+    }
+
+    function closeModal() {
+      console.log("Closing modal");
+      modal.style.display = "none";
+    }
+
+    closeBtn.onclick = function() {
+      closeModal();
+    };
+
+    window.onclick = function(event) {
+      if (event.target == modal) {
+        closeModal();
+      }
+    };
+
+    // Handle form submission
+    document.getElementById("upload-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+
+      const urlInput = document.getElementById("url");
+      const urlValue = urlInput.value.trim();
+      const fileInput = document.getElementById("excel-file");
+      const file = fileInput.files[0];
+
+      // Validate input
+      if (!urlValue && !file) {
+        showError("file-error", "Please provide a single URL or an Excel file.");
+        return;
+      }
+
+      if (urlValue && !isValidUrl(urlValue)) {
+        urlInput.classList.add('border-red-500');
+        showError("url-error", "Please enter a valid URL starting with http:// or https://");
+        return;
+      } else {
+        urlInput.classList.remove('border-red-500');
+        hideError("url-error");
+      }
+
+      // Show loader and connect WebSocket
+      const loader = document.getElementById("loader");
+      loader.classList.remove("hidden");
+      connectWebSocket();
+
+      const formData = new FormData();
+      if (urlValue) formData.append("url", urlValue);
+      if (file) formData.append("file", file);
+
+      try {
+        const response = await fetch("/upload", {
+          method: "POST",
+          body: formData
+        });
+
+        loader.classList.add("hidden");
+        closeWebSocket(); // Close WebSocket after request completes
+
+        if (response.ok) {
+          const data = await response.json();
+          const urlList = document.getElementById("url-list");
+          let html = "<h3 class='text-lg font-poppins font-semibold text-gray-800 mb-2'>Processed URLs:</h3>";
+          data.results.forEach(result => {
+            const statusClass = result.status === "success" ? "text-green-500" : "text-red-500";
+            html += `<div class="bg-gray-100 bg-opacity-75 rounded-lg p-4 mb-2">`;
+            html += `<p class="mb-1"><strong>URL:</strong> ${result.url}</p>`;
+            html += `<p><strong>Status:</strong> <span class="${statusClass}">${result.status}</span></p>`;
+            if (result.status === "failed") {
+              html += `<p class="mt-1"><strong>Error:</strong> ${result.error}</p>`;
+            }
+            html += `</div>`;
+          });
+          urlList.innerHTML = html;
+
+          // Update table with new data
+          const tableSection = document.getElementById("table-section");
+          const tableBody = document.getElementById("font-table-body");
+          const placeholderText = document.getElementById("placeholder-text");
+          placeholderText.classList.add("hidden");
+
+          if (data.font_data && data.font_data.length > 0) {
+            tableBody.innerHTML = "";
+            data.font_data.forEach((row, index) => {
+              const tr = document.createElement("tr");
+              tr.classList.add("border-b", "border-gray-300", index % 2 === 0 ? "bg-white" : "bg-blue-50", "transition");
+              const licenseSummary = row['License Summary'] || '-';
+              const licenseFull = row['License Type'] || '-';
+              tr.innerHTML = `
+                <td class="p-3 font-semibold">${row['Company'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Website URL'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Total Fonts'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Font Name(s)'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Family'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Subfamily'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Weight'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Designer'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Manufacturer'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Copyright'] || '-'}</td>
+                <td class="p-3 font-semibold">${row['Font URL'] || '-'}</td>
+                <td class="p-3 font-semibold">
+                  <span class="license-link" data-license="${licenseFull.replace(/"/g, '&quot;')}">${licenseSummary}</span>
+                </td>
+                <td class="p-3 font-semibold text-red-500">${row['Error'] || '-'}</td>
+              `;
+              tableBody.appendChild(tr);
+            });
+
+            // Add event listeners to all license links
+            const licenseLinks = document.querySelectorAll('.license-link');
+            licenseLinks.forEach(link => {
+              link.addEventListener('click', function() {
+                const licenseText = this.getAttribute('data-license');
+                openModal(licenseText);
+              });
+            });
+
+            tableSection.classList.remove("hidden");
+
+            // Show download button
+            document.getElementById("download-section").classList.remove("hidden");
+          } else {
+            tableBody.innerHTML = '<tr><td colspan="13" class="p-3 text-center text-gray-500">No data available. Upload a URL or file to see results.</td></tr>';
+            tableSection.classList.remove("hidden");
+          }
+        } else {
+          const errorData = await response.json();
+          showError("file-error", errorData.message || "An error occurred during processing.");
+        }
+      } catch (error) {
+        loader.classList.add("hidden");
+        closeWebSocket(); // Close WebSocket on error
+        showError("file-error", "An error occurred: " + error.message);
+        console.error("Error:", error);
+      }
+    });
+  </script>
 </body>
 </html>
