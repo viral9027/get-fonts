@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers
 RUN playwright install --with-deps chromium
-
+RUN ls -la /root/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell || echo "Playwright executable not found!"
 # Copy the rest of the application code
 COPY . .
 
