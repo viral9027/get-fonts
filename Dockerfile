@@ -37,4 +37,4 @@ EXPOSE 5000
 ENV PYTHONUNBUFFERED=1
 
 # Command to run your application
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "wsgi:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "--graceful-timeout", "30", "--worker-class", "gevent", "wsgi:app"]
