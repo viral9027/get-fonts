@@ -1,0 +1,8 @@
+{
+  "build": {
+    "command": "./install_playwright.sh"
+  },
+  "deploy": {
+    "command": "python app.py"
+  }
+}
