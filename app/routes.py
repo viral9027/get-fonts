@@ -171,6 +171,7 @@ async def process_url(url, company, ws=None, url_index=None, total_urls=None):
 
 @main.route('/upload', methods=['POST'])
 async def upload_file():
+    print("here-->", request.form)
     if not session.get('logged_in'):
         return jsonify({"status": "error", "message": "Unauthorized access. Please login."})
 

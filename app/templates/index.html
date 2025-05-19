@@ -408,7 +408,7 @@
       const formData = new FormData();
       if (urlValue) formData.append("url", urlValue);
       if (file) formData.append("file", file);
-
+      console.log("FormData:", formData);
       try {
         const response = await fetch("/upload", {
           method: "POST",
