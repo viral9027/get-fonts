@@ -1,28 +1,28 @@
+import os
 import logging
-import re
+import asyncio
 import json
 import uuid
-import pandas as pd
-from .extract_fonts import process_urls, clear_font_cache
-from flask import Blueprint
-from flask import render_template, request, jsonify, send_file, redirect, url_for, session
+import re
+from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, session
 from flask_sock import Sock
+import pandas as pd
+from extract_fonts import process_urls, clear_font_cache
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-main = Blueprint('main', __name__)
+app = Flask(__name__)
+app.secret_key = "supersecretkey"  # Required for session management
+sock = Sock(app)
 
-sock = Sock(main)
 # Hardcoded credentials (for demo purposes; use environment variables in production)
-
 USERNAME = "admin"
 PASSWORD = "admin"
 
 # Store font data globally for download
 global_font_data = []
-
 
 # Helper to validate URLs
 def is_valid_url(url):
@@ -31,10 +31,8 @@ def is_valid_url(url):
         return False
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
-    pattern = re.compile(
-        r'^https?://(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)$')
+    pattern = re.compile(r'^https?://(www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_\+.~#?&//=]*)$')
     return bool(pattern.match(url))
-
 
 # Function to summarize license type
 def summarize_license_type(license_text):
@@ -84,13 +82,11 @@ def summarize_license_type(license_text):
 
     return summary, license_text
 
-
-@main.route('/')
+@app.route('/')
 def login():
     return render_template('login.html')
 
-
-@main.route('/api/login', methods=['POST'])
+@app.route('/api/login', methods=['POST'])
 def login_post():
     username = request.form.get('username')
     password = request.form.get('password')
@@ -100,22 +96,19 @@ def login_post():
     else:
         return jsonify({"status": "error", "message": "Invalid credentials"})
 
-
-@main.route('/logout')
+@app.route('/logout')
 def logout():
     session.pop('logged_in', None)
     logger.debug("User logged out, redirecting to login page")
-    return redirect(url_for('main.login'))
+    return redirect(url_for('login'))
 
-
-@main.route('/upload')
+@app.route('/upload')
 def upload():
     if not session.get('logged_in'):
-        return redirect(url_for('main.login'))
+        return redirect(url_for('login'))
     return render_template('index.html')
 
-
-@main.route('/clear-cache', methods=['POST'])
+@app.route('/clear-cache', methods=['POST'])
 def clear_cache():
     try:
         clear_font_cache()
@@ -124,7 +117,6 @@ def clear_cache():
     except Exception as e:
         logger.error(f"Failed to clear cache: {str(e)}")
         return jsonify({"status": "error", "message": f"Failed to clear cache: {str(e)}"})
-
 
 async def process_url(url, company, ws=None, url_index=None, total_urls=None):
     logger.debug(f"Processing URL: {url}")
@@ -168,10 +160,8 @@ async def process_url(url, company, ws=None, url_index=None, total_urls=None):
         logger.error(f"Failed to process URL: {url}, Error: {str(e)}")
         return {"url": url, "status": "failed", "error": str(e)}, [], 0
 
-
-@main.route('/upload', methods=['POST'])
+@app.route('/upload', methods=['POST'])
 async def upload_file():
-    print("here-->", request.form)
     if not session.get('logged_in'):
         return jsonify({"status": "error", "message": "Unauthorized access. Please login."})
 
@@ -296,8 +286,7 @@ async def upload_file():
         "font_data": font_data
     })
 
-
-@main.route('/download-excel', methods=['POST'])
+@app.route('/download-excel', methods=['POST'])
 async def download_excel():
     if not session.get('logged_in'):
         return jsonify({"status": "error", "message": "Unauthorized access. Please login."})
@@ -315,7 +304,6 @@ async def download_excel():
         logger.error(f"Error generating Excel file: {str(e)}")
         return jsonify({"status": "error", "message": f"Error generating Excel file: {str(e)}"})
 
-
 @sock.route('/ws')
 async def websocket(ws):
     try:
@@ -328,3 +316,6 @@ async def websocket(ws):
         logger.debug(f"WebSocket closed: {str(e)}")
     finally:
         ws.close()
+
+if __name__ == "__main__":
+    app.run(debug=True, threaded=True)

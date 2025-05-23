@@ -1,40 +1,39 @@
-# Use an official Python runtime as a parent image
+# Use a slim Python 3.12 base image for a smaller footprint
 FROM python:3.12-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies required for Playwright
+# Install system dependencies required for Playwright and other libraries
 RUN apt-get update && apt-get install -y \
     libnss3 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
+    libxkbcommon0 \
     libgbm1 \
-    libpango-1.0-0 \
-    libcairo2 \
     libasound2 \
-    libxshmfence1 \
+    fonts-noto \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file
-COPY requirements.txt .
+# Copy application files
+COPY app.py extract_fonts.py req.txt ./
+COPY templates/index.html templates/login.html ./templates/
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies from req.txt
+RUN pip install --no-cache-dir -r req.txt
 
 # Install Playwright browsers
 RUN playwright install --with-deps chromium
-RUN ls -la /root/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell || echo "Playwright executable not found!"
-# Copy the rest of the application code
-COPY . .
 
+# Install gunicorn for production-grade WSGI server
+RUN pip install gunicorn
+
+# Expose port 5000 for Flask
 EXPOSE 5000
 
-# Set environment variables (optional, adjust as needed)
-ENV PYTHONUNBUFFERED=1
+# Set environment variables for Flask
+ENV FLASK_APP=app.py
+ENV FLASK_ENV=production
 
-# Command to run your application
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "wsgi:app"]
+# Command to run the application with gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "app:app"]

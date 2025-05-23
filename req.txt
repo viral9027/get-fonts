@@ -1,0 +1,17 @@
+flask
+flask-sock
+aiohttp
+pandas
+openpyxl
+selenium
+webdriver-manager
+fonttools
+tenacity
+playwright
+chardet
+proxybroker2
+trio
+attrs
+aiodns
+pycares
+
