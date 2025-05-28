@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Font Analyzer</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #ffffff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .table-container {
+            overflow-x: auto;
+        }
+        th, td {
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <!-- Loader Overlay -->
+    <div id="loader" class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 hidden">
+        <div class="spinner"></div>
+        <p class="ml-4 text-lg">Processing...</p>
+    </div>
+
+    <div class="container mx-auto p-4">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-3xl font-bold">Font Analyzer</h1>
+            <a href="/logout" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md">Logout</a>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Font Upload Section -->
+            <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                <h2 class="text-xl font-semibold mb-4">Upload Font File</h2>
+                <form id="upload-font-form" action="/upload-font" method="post" enctype="multipart/form-data" class="space-y-4">
+                    <input type="file" name="file" accept=".ttf,.otf" required
+                           class="w-full p-2 bg-gray-700 rounded-md">
+                    <button type="submit"
+                            class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md">
+                        Analyze Font
+                    </button>
+                </form>
+            </div>
+
+            <!-- Website Font Fetch Section -->
+            <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                <h2 class="text-xl font-semibold mb-4">Fetch Fonts from Website</h2>
+                <form id="fetch-fonts-form" action="/fetch-fonts" method="post" class="space-y-4">
+                    <input type="text" name="url" placeholder="Enter website URL (e.g., www.example.com)" required
+                           pattern="^(https?:\/\/)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(\/.*)?$"
+                           title="Please enter a valid domain (e.g., www.example.com or https://example.com)"
+                           class="w-full p-2 bg-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <button type="submit"
+                            class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md">
+                        Fetch Fonts
+                    </button>
+                </form>
+            </div>
+
+            <!-- New Section: Upload CSV/XLSX File -->
+            <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                <h2 class="text-xl font-semibold mb-4">Upload Company-Website File</h2>
+                <form id="upload-file-form" action="/upload-file" method="post" enctype="multipart/form-data" class="space-y-4">
+                    <input type="file" name="file" accept=".csv,.xlsx" required
+                           class="w-full p-2 bg-gray-700 rounded-md">
+                    <button type="submit"
+                            class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md">
+                        Process File
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Error Message Display -->
+        {% if error %}
+        <div class="mt-6 bg-red-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Error</h2>
+            <p>{{ error }}</p>
+        </div>
+        {% endif %}
+
+        <!-- Font Details Table (Uploaded Font) -->
+        {% if font_details %}
+        <div class="mt-6 bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Font Details ({{ filename }})</h2>
+            <div class="table-container">
+                <table class="min-w-full bg-gray-700 rounded-lg">
+                    <thead>
+                        <tr class="bg-gray-600">
+                            <th class="py-2 px-4 text-left">Company</th>
+                            <th class="py-2 px-4 text-left">Website URL</th>
+                            <th class="py-2 px-4 text-left">Total Fonts</th>
+                            <th class="py-2 px-4 text-left">Font Name(s)</th>
+                            <th class="py-2 px-4 text-left">Family</th>
+                            <th class="py-2 px-4 text-left">Subfamily</th>
+                            <th class="py-2 px-4 text-left">Weight</th>
+                            <th class="py-2 px-4 text-left">Designer</th>
+                            <th class="py-2 px-4 text-left">Manufacturer</th>
+                            <th class="py-2 px-4 text-left">Copyright</th>
+                            <th class="py-2 px-4 text-left">Font URL</th>
+                            <th class="py-2 px-4 text-left">License Type</th>
+                            <th class="py-2 px-4 text-left">Error</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="border-b border-gray-600">
+                            <td class="py-2 px-4">N/A</td>
+                            <td class="py-2 px-4">N/A</td>
+                            <td class="py-2 px-4">1</td>
+                            <td class="py-2 px-4">{{ font_details.full_name }}</td>
+                            <td class="py-2 px-4">{{ font_details.family }}</td>
+                            <td class="py-2 px-4">{{ font_details.subfamily }}</td>
+                            <td class="py-2 px-4">{{ font_details.weight }}</td>
+                            <td class="py-2 px-4">{{ font_details.designer }}</td>
+                            <td class="py-2 px-4">{{ font_details.manufacturer }}</td>
+                            <td class="py-2 px-4">{{ font_details.copyright }}</td>
+                            <td class="py-2 px-4">N/A</td>
+                            <td class="py-2 px-4">{{ font_details.license_type }}</td>
+                            <td class="py-2 px-4">-</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Font Details Table (Fetched Fonts from Single URL) -->
+        {% if font_details_list %}
+        <div class="mt-6 bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Fonts from {{ website_url }}</h2>
+            <div class="table-container">
+                <table class="min-w-full bg-gray-700 rounded-lg">
+                    <thead>
+                        <tr class="bg-gray-600">
+                            <th class="py-2 px-4 text-left">Company</th>
+                            <th class="py-2 px-4 text-left">Website URL</th>
+                            <th class="py-2 px-4 text-left">Total Fonts</th>
+                            <th class="py-2 px-4 text-left">Font Name(s)</th>
+                            <th class="py-2 px-4 text-left">Family</th>
+                            <th class="py-2 px-4 text-left">Subfamily</th>
+                            <th class="py-2 px-4 text-left">Weight</th>
+                            <th class="py-2 px-4 text-left">Designer</th>
+                            <th class="py-2 px-4 text-left">Manufacturer</th>
+                            <th class="py-2 px-4 text-left">Copyright</th>
+                            <th class="py-2 px-4 text-left">Font URL</th>
+                            <th class="py-2 px-4 text-left">License Type</th>
+                            <th class="py-2 px-4 text-left">Error</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for font in font_details_list %}
+                        <tr class="border-b border-gray-600">
+                            <td class="py-2 px-4">{{ company }}</td>
+                            <td class="py-2 px-4">{{ website_url }}</td>
+                            <td class="py-2 px-4">{{ total_fonts }}</td>
+                            <td class="py-2 px-4">{{ font.full_name }}</td>
+                            <td class="py-2 px-4">{{ font.family }}</td>
+                            <td class="py-2 px-4">{{ font.subfamily }}</td>
+                            <td class="py-2 px-4">{{ font.weight }}</td>
+                            <td class="py-2 px-4">{{ font.designer }}</td>
+                            <td class="py-2 px-4">{{ font.manufacturer }}</td>
+                            <td class="py-2 px-4">{{ font.copyright }}</td>
+                            <td class="py-2 px-4">
+                                <a href="{{ font.url }}" class="text-blue-400 hover:underline" target="_blank">Link</a>
+                            </td>
+                            <td class="py-2 px-4">{{ font.license_type }}</td>
+                            <td class="py-2 px-4">-</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Font Details Table (Bulk Fetched Fonts from File) -->
+        {% if bulk_results %}
+        <div class="mt-6 bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Fonts from Uploaded File</h2>
+            {% for result in bulk_results %}
+            <div class="mb-6">
+                <h3 class="text-lg font-medium mb-2">{{ result.company }} ({{ result.website_url }})</h3>
+                {% if result.error %}
+                <div class="bg-red-800 p-4 rounded-lg">
+                    <p>{{ result.error }}</p>
+                </div>
+                {% else %}
+                <div class="table-container">
+                    <table class="min-w-full bg-gray-700 rounded-lg">
+                        <thead>
+                            <tr class="bg-gray-600">
+                                <th class="py-2 px-4 text-left">Company</th>
+                                <th class="py-2 px-4 text-left">Website URL</th>
+                                <th class="py-2 px-4 text-left">Total Fonts</th>
+                                <th class="py-2 px-4 text-left">Font Name(s)</th>
+                                <th class="py-2 px-4 text-left">Family</th>
+                                <th class="py-2 px-4 text-left">Subfamily</th>
+                                <th class="py-2 px-4 text-left">Weight</th>
+                                <th class="py-2 px-4 text-left">Designer</th>
+                                <th class="py-2 px-4 text-left">Manufacturer</th>
+                                <th class="py-2 px-4 text-left">Copyright</th>
+                                <th class="py-2 px-4 text-left">Font URL</th>
+                                <th class="py-2 px-4 text-left">License Type</th>
+                                <th class="py-2 px-4 text-left">Error</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for font in result.font_details_list %}
+                            <tr class="border-b border-gray-600">
+                                <td class="py-2 px-4">{{ result.company }}</td>
+                                <td class="py-2 px-4">{{ result.website_url }}</td>
+                                <td class="py-2 px-4">{{ result.total_fonts }}</td>
+                                <td class="py-2 px-4">{{ font.full_name }}</td>
+                                <td class="py-2 px-4">{{ font.family }}</td>
+                                <td class="py-2 px-4">{{ font.subfamily }}</td>
+                                <td class="py-2 px-4">{{ font.weight }}</td>
+                                <td class="py-2 px-4">{{ font.designer }}</td>
+                                <td class="py-2 px-4">{{ font.manufacturer }}</td>
+                                <td class="py-2 px-4">{{ font.copyright }}</td>
+                                <td class="py-2 px-4">
+                                    <a href="{{ font.url }}" class="text-blue-400 hover:underline" target="_blank">Link</a>
+                                </td>
+                                <td class="py-2 px-4">{{ font.license_type }}</td>
+                                <td class="py-2 px-4">-</td>
+                            </tr>
+                            {% else %}
+                            <tr>
+                                <td colspan="13" class="py-2 px-4 text-center">No fonts found.</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- JavaScript to Show/Hide Loader -->
+    <script>
+        const loader = document.getElementById('loader');
+        const uploadFontForm = document.getElementById('upload-font-form');
+        const fetchFontsForm = document.getElementById('fetch-fonts-form');
+        const uploadFileForm = document.getElementById('upload-file-form');
+
+        uploadFontForm.addEventListener('submit', () => {
+            loader.classList.remove('hidden');
+        });
+
+        fetchFontsForm.addEventListener('submit', () => {
+            loader.classList.remove('hidden');
+        });
+
+        uploadFileForm.addEventListener('submit', () => {
+            loader.classList.remove('hidden');
+        });
+
+        window.addEventListener('load', () => {
+            loader.classList.add('hidden');
+        });
+    </script>
+</body>
+</html>

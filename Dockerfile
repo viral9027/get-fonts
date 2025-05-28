@@ -1,40 +1,48 @@
-# Use an official Python runtime as a parent image
-FROM python:3.12-slim
+# Use a slim Python base image to reduce size
+FROM python:3.9-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Install system dependencies required for Playwright and other libraries
+RUN apt-get update && apt-get install -y \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxdamage1 \
+    libxi6 \
+    libxtst6 \
+    libnss3 \
+    libxrandr2 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libgtk-3-0 \
+    libgbm1 \
+    fonts-liberation \
+    libu2f-udev \
+    libvulkan1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies required for Playwright
-RUN apt-get update && apt-get install -y \
-    libnss3 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libgbm1 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libasound2 \
-    libxshmfence1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements file
+# Copy requirements file and install Python dependencies
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers
-RUN playwright install --with-deps chromium
-RUN ls -la /root/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux/headless_shell || echo "Playwright executable not found!"
-# Copy the rest of the application code
-COPY . .
+RUN playwright install chromium
 
-EXPOSE 5000
+# Copy the application code
+COPY main.py .
+COPY templates/ templates/
+COPY static/ static/
 
-# Set environment variables (optional, adjust as needed)
-ENV PYTHONUNBUFFERED=1
+# Expose the port the app runs on
+EXPOSE 8000
 
-# Command to run your application
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "4", "wsgi:app"]
+# Run the application with uvicorn in production mode
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
