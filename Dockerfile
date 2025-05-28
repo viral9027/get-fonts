@@ -29,6 +29,9 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
+# Create the static directory to ensure it exists
+RUN mkdir -p static
+
 # Copy requirements file and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -37,7 +40,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium
 
 # Copy the application code
-COPY . .
+COPY main.py .
+COPY templates/ templates/
+COPY static/ static/
+
 # Expose the port the app runs on
 EXPOSE 8000
 
