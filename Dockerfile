@@ -39,7 +39,6 @@ RUN playwright install chromium
 # Copy the application code
 COPY main.py .
 COPY templates/ templates/
-COPY static/ static/
 
 # Expose the port the app runs on
 EXPOSE 8000
