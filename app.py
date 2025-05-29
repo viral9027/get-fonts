@@ -327,7 +327,7 @@ async def fetch_fonts_from_url(url: str):
     font_details_list = []
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
+            browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
 
             # Set a realistic user-agent to avoid bot detection
