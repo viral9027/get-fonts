@@ -16,6 +16,7 @@ import json
 import pandas as pd  # Added for CSV/XLSX parsing
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 users_db = {
@@ -27,11 +28,9 @@ users_db = {
 
 sessions = {}
 
-
 class LoginData(BaseModel):
     email: str
     password: str
-
 
 def get_current_user(request: Request):
     session_id = request.cookies.get("session_id")
@@ -42,7 +41,6 @@ def get_current_user(request: Request):
         del sessions[session_id]
         return None
     return session_data["email"]
-
 
 def normalize_url(url: str) -> str:
     if not url.startswith(('http://', 'https://')):
@@ -60,7 +58,6 @@ def normalize_url(url: str) -> str:
     ))
     return normalized
 
-
 def extract_company_from_url(url: str) -> str:
     parsed = urlparse(url)
     domain = parsed.netloc.lower()
@@ -68,7 +65,6 @@ def extract_company_from_url(url: str) -> str:
         domain = domain[4:]
     company = domain.split('.')[0]
     return ' '.join(word.capitalize() for word in company.split('-'))
-
 
 def save_font_data(data_type: str, data: dict):
     try:
@@ -90,16 +86,13 @@ def save_font_data(data_type: str, data: dict):
     except Exception as e:
         print(f"Error saving font data: {str(e)}")
 
-
 @app.get("/", response_class=HTMLResponse)
 async def get_login(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
 
-
 @app.get("/login", response_class=RedirectResponse)
 async def get_login_redirect():
     return RedirectResponse(url="/", status_code=303)
-
 
 @app.post("/login", response_class=HTMLResponse)
 async def login(response: Response, email: str = Form(...), password: str = Form(...)):
@@ -120,13 +113,11 @@ async def login(response: Response, email: str = Form(...), password: str = Form
     response.set_cookie(key="session_id", value=session_id, httponly=True)
     return response
 
-
 @app.get("/main", response_class=HTMLResponse)
 async def get_main(request: Request, current_user: str = Depends(get_current_user)):
     if not current_user:
         return RedirectResponse(url="/", status_code=303)
     return templates.TemplateResponse("main.html", {"request": request})
-
 
 @app.get("/logout", response_class=RedirectResponse)
 async def logout(request: Request, response: Response):
@@ -137,11 +128,9 @@ async def logout(request: Request, response: Response):
     response.delete_cookie("session_id")
     return response
 
-
 @app.get("/upload-font", response_class=RedirectResponse)
 async def get_upload_font_redirect():
     return RedirectResponse(url="/", status_code=303)
-
 
 @app.post("/upload-font", response_class=HTMLResponse)
 async def upload_font(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
@@ -153,7 +142,16 @@ async def upload_font(request: Request, file: UploadFile = File(...), current_us
         with open(temp_file_path, "wb") as f:
             f.write(content)
 
-        font = TTFont(temp_file_path)
+        font = None
+        if temp_file_path.lower().endswith(('.woff', '.woff2')):
+            import woff2
+            ttf_path = temp_file_path.rsplit('.', 1)[0] + '.ttf'
+            woff2.decompress(temp_file_path, ttf_path)
+            font = TTFont(ttf_path)
+            os.remove(ttf_path)
+        else:
+            font = TTFont(temp_file_path)
+
         font_details = extract_font_details(font)
 
         os.remove(temp_file_path)
@@ -174,11 +172,9 @@ async def upload_font(request: Request, file: UploadFile = File(...), current_us
             "error": f"Error processing font: {str(e)}"
         })
 
-
 @app.get("/fetch-fonts", response_class=RedirectResponse)
 async def get_fetch_fonts_redirect():
     return RedirectResponse(url="/", status_code=303)
-
 
 @app.post("/fetch-fonts", response_class=HTMLResponse)
 async def fetch_fonts(request: Request, url: str = Form(...), current_user: str = Depends(get_current_user)):
@@ -214,12 +210,9 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
             "error": f"Error fetching fonts from {url}: {str(e)}"
         })
 
-
-# New endpoint for uploading CSV/XLSX file
 @app.get("/upload-file", response_class=RedirectResponse)
 async def get_upload_file_redirect():
     return RedirectResponse(url="/", status_code=303)
-
 
 @app.post("/upload-file", response_class=HTMLResponse)
 async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
@@ -227,28 +220,24 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
         return RedirectResponse(url="/", status_code=303)
 
     try:
-        # Validate file type
         if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx')):
             return templates.TemplateResponse("main.html", {
                 "request": request,
                 "error": "Please upload a CSV or XLSX file."
             })
 
-        # Read the file content
         content = await file.read()
         temp_file_path = f"temp_{file.filename}"
         with open(temp_file_path, "wb") as f:
             f.write(content)
 
-        # Parse the file using pandas
         if file.filename.endswith('.csv'):
             df = pd.read_csv(temp_file_path)
-        else:  # .xlsx
+        else:
             df = pd.read_excel(temp_file_path, engine='openpyxl')
 
         os.remove(temp_file_path)
 
-        # Validate the file structure
         expected_columns = ["Company", "Website"]
         if not all(col in df.columns for col in expected_columns):
             return templates.TemplateResponse("main.html", {
@@ -256,7 +245,6 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 "error": "File must contain 'Company' and 'Website' columns."
             })
 
-        # Process each row to fetch fonts
         bulk_results = []
         for _, row in df.iterrows():
             company = str(row["Company"]).strip()
@@ -281,7 +269,6 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                     "error": f"Error fetching fonts from {website}: {str(e)}"
                 })
 
-        # Save the bulk results for export compatibility
         save_font_data("bulk_fetched", bulk_results)
 
         return templates.TemplateResponse("main.html", {
@@ -293,7 +280,6 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
             "request": request,
             "error": f"Error processing file: {str(e)}"
         })
-
 
 def extract_font_details(font: TTFont):
     name_table = font["name"]
@@ -325,75 +311,89 @@ def extract_font_details(font: TTFont):
 
 async def fetch_fonts_from_url(url: str):
     font_details_list = []
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+    max_retries = 2
+    retry_count = 0
 
-            # Set a realistic user-agent to avoid bot detection
-            await page.set_extra_http_headers({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-            })
+    fonts = []
+    while retry_count < max_retries:
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
+                page = await browser.new_page()
 
-            fonts = []
+                await page.set_extra_http_headers({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                })
+                await page.route("**/*", lambda route: route.abort() if route.request.resource_type == "image" else route.continue_())
 
-            async def capture_fonts(request):
-                if request.resource_type == "font":
-                    font_url = request.url.lower()
-                    if font_url.endswith(('.ttf', '.otf', '.woff2')):  # Include WOFF2 if you want to process it
-                        fonts.append(request.url)
-                    else:
-                        print(f"Skipping unsupported font format: {font_url}")
+                async def capture_fonts(request):
+                    if request.resource_type == "font":
+                        font_url = request.url.lower()
+                        if font_url.endswith(('.ttf', '.otf', '.woff', '.woff2')):
+                            fonts.append(request.url)
+                        else:
+                            print(f"Skipping unsupported font format: {font_url}")
 
-            page.on("request", capture_fonts)
+                page.on("request", capture_fonts)
 
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=180000)
+                    break
+                except PlaywrightTimeoutError:
+                    print(f"Timeout navigating to {url}. Proceeding with captured fonts.")
+                    break
+                except Exception as e:
+                    print(f"Error navigating to {url}: {str(e)}. Retrying ({retry_count + 1}/{max_retries})...")
+                    retry_count += 1
+                    if retry_count == max_retries:
+                        print(f"Max retries reached for {url}. Proceeding with captured fonts.")
+                    continue
+
+                finally:
+                    await browser.close()
+
+        except Exception as e:
+            print(f"Error in fetch_fonts_from_url: {str(e)}")
+            break
+
+    async with aiohttp.ClientSession() as session:
+        for font_url in fonts:
             try:
-                # Use domcontentloaded instead of networkidle to reduce load time
-                await page.goto(url, wait_until="domcontentloaded", timeout=180000)
-            except PlaywrightTimeoutError:
-                print(f"Timeout navigating to {url}. Proceeding with captured fonts.")
-            except Exception as e:
-                print(f"Error navigating to {url}: {str(e)}. Proceeding with captured fonts.")
-
-            await browser.close()
-
-            async with aiohttp.ClientSession() as session:
-                for font_url in fonts:
-                    try:
-                        async with session.get(font_url, timeout=30) as response:
-                            if response.status == 200:
-                                content = await response.read()
-                                temp_file_path = f"temp_font_{secrets.token_hex(4)}"
-                                # Adjust file extension based on the URL
-                                if font_url.endswith('.woff2'):
-                                    temp_file_path += '.woff2'
-                                else:
-                                    temp_file_path += '.ttf'
-                                with open(temp_file_path, "wb") as f:
-                                    f.write(content)
-                                try:
-                                    if font_url.endswith('.woff2'):
-                                        # Convert WOFF2 to TTF (requires woff2 library)
-                                        import woff2
-                                        ttf_path = temp_file_path.replace('.woff2', '.ttf')
-                                        woff2.decompress(temp_file_path, ttf_path)
-                                        font爾 = TTFont(ttf_path)
-                                        os.remove(ttf_path)  # Clean up the converted file
-                                    else:
-                                        font = TTFont(temp_file_path)
-                                    font_details = extract_font_details(font)
-                                    font_details["url"] = font_url
-                                    font_details_list.append(font_details)
-                                except Exception as e:
-                                    print(f"Error processing font from {font_url}: {str(e)}")
-                                finally:
-                                    os.remove(temp_file_path)
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                    "Referer": url
+                }
+                async with session.get(font_url, timeout=30, headers=headers) as response:
+                    if response.status == 200:
+                        content = await response.read()
+                        temp_file_path = f"temp_font_{secrets.token_hex(4)}"
+                        if font_url.endswith('.woff'):
+                            temp_file_path += '.woff'
+                        elif font_url.endswith('.woff2'):
+                            temp_file_path += '.woff2'
+                        else:
+                            temp_file_path += '.ttf'
+                        with open(temp_file_path, "wb") as f:
+                            f.write(content)
+                        try:
+                            if font_url.endswith(('.woff', '.woff2')):
+                                import woff2
+                                ttf_path = temp_file_path.replace('.woff', '.ttf').replace('.woff2', '.ttf')
+                                woff2.decompress(temp_file_path, ttf_path)
+                                font = TTFont(ttf_path)
+                                os.remove(ttf_path)
                             else:
-                                print(f"Failed to download font from {font_url}: HTTP {response.status}")
-                    except Exception as e:
-                        print(f"Error downloading font from {font_url}: {str(e)}")
-
-    except Exception as e:
-        print(f"Error in fetch_fonts_from_url: {str(e)}")
+                                font = TTFont(temp_file_path)
+                            font_details = extract_font_details(font)
+                            font_details["url"] = font_url
+                            font_details_list.append(font_details)
+                        except Exception as e:
+                            print(f"Error processing font from {font_url}: {str(e)}")
+                        finally:
+                            os.remove(temp_file_path)
+                    else:
+                        print(f"Failed to download font from {font_url}: HTTP {response.status}")
+            except Exception as e:
+                print(f"Error downloading font from {font_url}: {str(e)}")
 
     return font_details_list
