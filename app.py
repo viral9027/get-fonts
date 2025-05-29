@@ -16,7 +16,7 @@ import json
 import pandas as pd  # Added for CSV/XLSX parsing
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 users_db = {
