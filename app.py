@@ -327,25 +327,33 @@ async def fetch_fonts_from_url(url: str):
     font_details_list = []
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=False)
             page = await browser.new_page()
+
+            # Set a realistic user-agent to avoid bot detection
+            await page.set_extra_http_headers({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            })
 
             fonts = []
 
             async def capture_fonts(request):
                 if request.resource_type == "font":
-                    # Validate the URL to ensure it looks like a font file
                     font_url = request.url.lower()
-                    if font_url.endswith(('.ttf', '.otf')):  # Only process TTF and OTF files
+                    if font_url.endswith(('.ttf', '.otf', '.woff2')):  # Include WOFF2 if you want to process it
                         fonts.append(request.url)
                     else:
                         print(f"Skipping unsupported font format: {font_url}")
 
             page.on("request", capture_fonts)
+
             try:
-                await page.goto(url, wait_until="networkidle", timeout=180000)
+                # Use domcontentloaded instead of networkidle to reduce load time
+                await page.goto(url, wait_until="domcontentloaded", timeout=180000)
             except PlaywrightTimeoutError:
                 print(f"Timeout navigating to {url}. Proceeding with captured fonts.")
+            except Exception as e:
+                print(f"Error navigating to {url}: {str(e)}. Proceeding with captured fonts.")
 
             await browser.close()
 
@@ -355,11 +363,24 @@ async def fetch_fonts_from_url(url: str):
                         async with session.get(font_url, timeout=30) as response:
                             if response.status == 200:
                                 content = await response.read()
-                                temp_file_path = f"temp_font_{secrets.token_hex(4)}.ttf"
+                                temp_file_path = f"temp_font_{secrets.token_hex(4)}"
+                                # Adjust file extension based on the URL
+                                if font_url.endswith('.woff2'):
+                                    temp_file_path += '.woff2'
+                                else:
+                                    temp_file_path += '.ttf'
                                 with open(temp_file_path, "wb") as f:
                                     f.write(content)
                                 try:
-                                    font = TTFont(temp_file_path)
+                                    if font_url.endswith('.woff2'):
+                                        # Convert WOFF2 to TTF (requires woff2 library)
+                                        import woff2
+                                        ttf_path = temp_file_path.replace('.woff2', '.ttf')
+                                        woff2.decompress(temp_file_path, ttf_path)
+                                        font爾 = TTFont(ttf_path)
+                                        os.remove(ttf_path)  # Clean up the converted file
+                                    else:
+                                        font = TTFont(temp_file_path)
                                     font_details = extract_font_details(font)
                                     font_details["url"] = font_url
                                     font_details_list.append(font_details)
