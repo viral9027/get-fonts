@@ -39,6 +39,9 @@ COPY static/ ./static/
 # Copy the rest of the application code
 COPY . .
 
+# Re-run playwright install to ensure binaries are available after copying code
+RUN playwright install
+
 # Expose the port Railway will use
 EXPOSE 8000
 
