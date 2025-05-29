@@ -19,13 +19,8 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     && apt-get clean
 
-# Set environment variables for Playwright to control binary location
-ENV PLAYWRIGHT_BROWSERS_PATH=/app/playwright-browsers
-
-# Install Playwright and its dependencies
-RUN pip install playwright==1.44.0 && \
-    playwright install --with-deps chromium && \
-    mkdir -p /app/playwright-browsers
+# Install Playwright dependencies
+RUN pip install playwright==1.44.0 && playwright install --with-deps chromium
 
 # Copy requirements file
 COPY requirements.txt .
@@ -33,17 +28,11 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the static directory explicitly
-COPY static/ ./static/
-
 # Copy the rest of the application code
 COPY . .
-
-# Re-run playwright install to ensure binaries are available after copying code
 RUN playwright install
-
 # Expose the port Railway will use
-EXPOSE 8000
+EXPOSE 5000
 
 # Command to run the FastAPI app
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000", "--workers", "1"]
