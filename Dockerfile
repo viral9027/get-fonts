@@ -30,7 +30,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code
 COPY . .
-RUN playwright install
+# Install Playwright browsers
+RUN playwright install --with-deps chromium
+
+# Install gunicorn for production-grade WSGI server
+RUN pip install gunicorn
+# Install Playwright browsers
+RUN playwright install --with-deps chromium
+
+
+
 # Expose the port Railway will use
 EXPOSE 5000
 
