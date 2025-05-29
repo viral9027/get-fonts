@@ -323,7 +323,6 @@ def extract_font_details(font: TTFont):
         "weight": weight
     }
 
-
 async def fetch_fonts_from_url(url: str):
     font_details_list = []
     try:
@@ -335,7 +334,12 @@ async def fetch_fonts_from_url(url: str):
 
             async def capture_fonts(request):
                 if request.resource_type == "font":
-                    fonts.append(request.url)
+                    # Validate the URL to ensure it looks like a font file
+                    font_url = request.url.lower()
+                    if font_url.endswith(('.ttf', '.otf')):  # Only process TTF and OTF files
+                        fonts.append(request.url)
+                    else:
+                        print(f"Skipping unsupported font format: {font_url}")
 
             page.on("request", capture_fonts)
             try:
@@ -359,10 +363,14 @@ async def fetch_fonts_from_url(url: str):
                                     font_details = extract_font_details(font)
                                     font_details["url"] = font_url
                                     font_details_list.append(font_details)
+                                except Exception as e:
+                                    print(f"Error processing font from {font_url}: {str(e)}")
                                 finally:
                                     os.remove(temp_file_path)
+                            else:
+                                print(f"Failed to download font from {font_url}: HTTP {response.status}")
                     except Exception as e:
-                        print(f"Error processing font from {font_url}: {str(e)}")
+                        print(f"Error downloading font from {font_url}: {str(e)}")
 
     except Exception as e:
         print(f"Error in fetch_fonts_from_url: {str(e)}")
