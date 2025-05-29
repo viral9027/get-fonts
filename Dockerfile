@@ -29,9 +29,10 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
+COPY . .
 # Create the static directory to ensure it exists
 RUN mkdir -p static
-COPY . .
+
 # Copy requirements file and install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
