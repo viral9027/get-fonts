@@ -13,7 +13,7 @@ import secrets
 import time
 from urllib.parse import urlparse, urlunparse
 import json
-import pandas as pd  # Added for CSV/XLSX parsing
+import pandas as pd
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -137,24 +137,32 @@ async def upload_font(request: Request, file: UploadFile = File(...), current_us
     if not current_user:
         return RedirectResponse(url="/", status_code=303)
     try:
+        # Validate file extension
+        if not file.filename.lower().endswith(('.ttf', '.otf', '.woff', '.woff2')):
+            return templates.TemplateResponse("main.html", {
+                "request": request,
+                "error": "Unsupported font format. Please upload a .ttf, .otf, .woff, or .woff2 file."
+            })
+
         content = await file.read()
-        temp_file_path = f"temp_{file.filename}"
+        temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
         with open(temp_file_path, "wb") as f:
             f.write(content)
 
         font = None
-        if temp_file_path.lower().endswith(('.woff', '.woff2')):
-            import woff2
-            ttf_path = temp_file_path.rsplit('.', 1)[0] + '.ttf'
-            woff2.decompress(temp_file_path, ttf_path)
-            font = TTFont(ttf_path)
-            os.remove(ttf_path)
-        else:
-            font = TTFont(temp_file_path)
+        try:
+            if temp_file_path.lower().endswith(('.woff', '.woff2')):
+                import woff2
+                ttf_path = temp_file_path.rsplit('.', 1)[0] + '.ttf'
+                woff2.decompress(temp_file_path, ttf_path)
+                font = TTFont(ttf_path)
+                os.remove(ttf_path)
+            else:
+                font = TTFont(temp_file_path)
 
-        font_details = extract_font_details(font)
-
-        os.remove(temp_file_path)
+            font_details = extract_font_details(font)
+        finally:
+            os.remove(temp_file_path)
 
         save_font_data("uploaded", {
             "filename": file.filename,
@@ -227,16 +235,17 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
             })
 
         content = await file.read()
-        temp_file_path = f"temp_{file.filename}"
+        temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
         with open(temp_file_path, "wb") as f:
             f.write(content)
 
-        if file.filename.endswith('.csv'):
-            df = pd.read_csv(temp_file_path)
-        else:
-            df = pd.read_excel(temp_file_path, engine='openpyxl')
-
-        os.remove(temp_file_path)
+        try:
+            if file.filename.endswith('.csv'):
+                df = pd.read_csv(temp_file_path)
+            else:
+                df = pd.read_excel(temp_file_path, engine='openpyxl')
+        finally:
+            os.remove(temp_file_path)
 
         expected_columns = ["Company", "Website"]
         if not all(col in df.columns for col in expected_columns):
@@ -245,29 +254,33 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 "error": "File must contain 'Company' and 'Website' columns."
             })
 
-        bulk_results = []
-        for _, row in df.iterrows():
-            company = str(row["Company"]).strip()
-            website = str(row["Website"]).strip()
+        # Process URLs with concurrency control
+        semaphore = asyncio.Semaphore(2)  # Limit to 2 concurrent fetches
+        async def process_row(row):
+            async with semaphore:
+                company = str(row["Company"]).strip()
+                website = str(row["Website"]).strip()
+                try:
+                    normalized_url = normalize_url(website)
+                    font_details_list = await fetch_fonts_from_url(normalized_url)
+                    return {
+                        "company": company,
+                        "website_url": normalized_url,
+                        "total_fonts": len(font_details_list) if font_details_list else 0,
+                        "font_details_list": font_details_list,
+                        "error": None
+                    }
+                except Exception as e:
+                    return {
+                        "company": company,
+                        "website_url": website,
+                        "total_fonts": 0,
+                        "font_details_list": [],
+                        "error": f"Error fetching fonts from {website}: {str(e)}"
+                    }
 
-            try:
-                normalized_url = normalize_url(website)
-                font_details_list = await fetch_fonts_from_url(normalized_url)
-                bulk_results.append({
-                    "company": company,
-                    "website_url": normalized_url,
-                    "total_fonts": len(font_details_list) if font_details_list else 0,
-                    "font_details_list": font_details_list,
-                    "error": None
-                })
-            except Exception as e:
-                bulk_results.append({
-                    "company": company,
-                    "website_url": website,
-                    "total_fonts": 0,
-                    "font_details_list": [],
-                    "error": f"Error fetching fonts from {website}: {str(e)}"
-                })
+        tasks = [process_row(row) for _, row in df.iterrows()]
+        bulk_results = await asyncio.gather(*tasks)
 
         save_font_data("bulk_fetched", bulk_results)
 
@@ -337,7 +350,7 @@ async def fetch_fonts_from_url(url: str):
                 page.on("request", capture_fonts)
 
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=180000)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=120000)
                     break
                 except PlaywrightTimeoutError:
                     print(f"Timeout navigating to {url}. Proceeding with captured fonts.")
