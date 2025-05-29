@@ -40,6 +40,8 @@ RUN playwright install chromium
 
 # Expose the port the app runs on
 EXPOSE 8000
-
+# Set environment variables for Flask
+ENV FLASK_APP=app.py
+ENV FLASK_ENV=production
 # Simplified CMD: Run uvicorn with minimal options (single worker)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
