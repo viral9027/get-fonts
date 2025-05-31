@@ -19,26 +19,20 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     && apt-get clean
 
-# Install Playwright dependencies
-RUN pip install playwright==1.44.0 && playwright install --with-deps chromium
-
 # Copy requirements file
 COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
-COPY . .
-# Install Playwright browsers
-RUN playwright install --with-deps chromium
+# Install Playwright and its dependencies
+RUN pip install playwright==1.48.0 && playwright install --with-deps chromium
 
 # Install gunicorn for production-grade WSGI server
-RUN pip install gunicorn
-# Install Playwright browsers
-RUN playwright install --with-deps chromium
+RUN pip install gunicorn==22.0.0
 
-
+# Copy the rest of the application code
+COPY . .
 
 # Expose the port Railway will use
 EXPOSE 5000

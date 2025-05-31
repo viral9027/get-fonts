@@ -35,11 +35,15 @@ class LoginData(BaseModel):
 def get_current_user(request: Request):
     session_id = request.cookies.get("session_id")
     if not session_id or session_id not in sessions:
+        print(f"No session found for session_id: {session_id}")
         return None
-    session_data = sessions[session_id]
-    if time.time() - session_data["created_at"] > 3600:
-        del sessions[session_id]
+    session_data = sessions.get(session_id)
+    if not session_data or time.time() - session_data["created_at"] > 3600:
+        if session_id in sessions:
+            print(f"Session expired for session_id: {session_id}")
+            del sessions[session_id]
         return None
+    print(f"Session valid for user: {session_data['email']}")
     return session_data["email"]
 
 def normalize_url(url: str) -> str:
@@ -47,7 +51,7 @@ def normalize_url(url: str) -> str:
         url = 'https://' + url
     parsed = urlparse(url)
     if not parsed.netloc:
-        raise ValueError("Invalid URL: No domain specified")
+        raise ValueError("Invalid URL: No cerevisiae specified")
     normalized = urlunparse((
         parsed.scheme or 'https',
         parsed.netloc,
@@ -110,13 +114,16 @@ async def login(response: Response, email: str = Form(...), password: str = Form
         "created_at": time.time()
     }
     response = RedirectResponse(url="/main", status_code=303)
-    response.set_cookie(key="session_id", value=session_id, httponly=True)
+    response.set_cookie(key="session_id", value=session_id, httponly=True, secure=False)
     return response
 
 @app.get("/main", response_class=HTMLResponse)
 async def get_main(request: Request, current_user: str = Depends(get_current_user)):
     if not current_user:
-        return RedirectResponse(url="/", status_code=303)
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Session expired. Please log in again."
+        })
     return templates.TemplateResponse("main.html", {"request": request})
 
 @app.get("/logout", response_class=RedirectResponse)
@@ -135,9 +142,11 @@ async def get_upload_font_redirect():
 @app.post("/upload-font", response_class=HTMLResponse)
 async def upload_font(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
     if not current_user:
-        return RedirectResponse(url="/", status_code=303)
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Session expired. Please log in again."
+        })
     try:
-        # Validate file extension
         if not file.filename.lower().endswith(('.ttf', '.otf', '.woff', '.woff2')):
             return templates.TemplateResponse("main.html", {
                 "request": request,
@@ -187,7 +196,10 @@ async def get_fetch_fonts_redirect():
 @app.post("/fetch-fonts", response_class=HTMLResponse)
 async def fetch_fonts(request: Request, url: str = Form(...), current_user: str = Depends(get_current_user)):
     if not current_user:
-        return RedirectResponse(url="/", status_code=303)
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Session expired. Please log in again."
+        })
     try:
         normalized_url = normalize_url(url)
         font_details_list = await fetch_fonts_from_url(normalized_url)
@@ -200,12 +212,18 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
             "font_details_list": font_details_list
         })
 
+        if not font_details_list:
+            return templates.TemplateResponse("main.html", {
+                "request": request,
+                "error": f"No fonts found on {normalized_url}. The website might not use downloadable fonts, or they are protected by CORS."
+            })
+
         return templates.TemplateResponse("main.html", {
             "request": request,
             "font_details_list": font_details_list,
             "website_url": normalized_url,
             "company": company,
-            "total_fonts": len(font_details_list) if font_details_list else 0
+            "total_fonts": len(font_details_list)
         })
     except ValueError as e:
         return templates.TemplateResponse("main.html", {
@@ -225,7 +243,10 @@ async def get_upload_file_redirect():
 @app.post("/upload-file", response_class=HTMLResponse)
 async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
     if not current_user:
-        return RedirectResponse(url="/", status_code=303)
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Session expired. Please log in again."
+        })
 
     try:
         if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx')):
@@ -254,8 +275,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 "error": "File must contain 'Company' and 'Website' columns."
             })
 
-        # Process URLs with concurrency control
-        semaphore = asyncio.Semaphore(2)  # Limit to 2 concurrent fetches
+        semaphore = asyncio.Semaphore(2)
         async def process_row(row):
             async with semaphore:
                 company = str(row["Company"]).strip()
@@ -342,6 +362,7 @@ async def fetch_fonts_from_url(url: str):
                 async def capture_fonts(request):
                     if request.resource_type == "font":
                         font_url = request.url.lower()
+                        print(f"Captured font request: {font_url}")
                         if font_url.endswith(('.ttf', '.otf', '.woff', '.woff2')):
                             fonts.append(request.url)
                         else:
@@ -350,7 +371,9 @@ async def fetch_fonts_from_url(url: str):
                 page.on("request", capture_fonts)
 
                 try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=120000)
+                    await page.goto(url, wait_until="networkidle", timeout=120000)
+                    await page.wait_for_timeout(5000)
+                    print(f"Total fonts captured: {len(fonts)}")
                     break
                 except PlaywrightTimeoutError:
                     print(f"Timeout navigating to {url}. Proceeding with captured fonts.")
@@ -361,7 +384,6 @@ async def fetch_fonts_from_url(url: str):
                     if retry_count == max_retries:
                         print(f"Max retries reached for {url}. Proceeding with captured fonts.")
                     continue
-
                 finally:
                     await browser.close()
 
@@ -376,6 +398,7 @@ async def fetch_fonts_from_url(url: str):
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
                     "Referer": url
                 }
+                print(f"Downloading font from: {font_url}")
                 async with session.get(font_url, timeout=30, headers=headers) as response:
                     if response.status == 200:
                         content = await response.read()
@@ -389,17 +412,12 @@ async def fetch_fonts_from_url(url: str):
                         with open(temp_file_path, "wb") as f:
                             f.write(content)
                         try:
-                            if font_url.endswith(('.woff', '.woff2')):
-                                import woff2
-                                ttf_path = temp_file_path.replace('.woff', '.ttf').replace('.woff2', '.ttf')
-                                woff2.decompress(temp_file_path, ttf_path)
-                                font = TTFont(ttf_path)
-                                os.remove(ttf_path)
-                            else:
-                                font = TTFont(temp_file_path)
+                            # Let fontTools handle WOFF/WOFF2 directly
+                            font = TTFont(temp_file_path)
                             font_details = extract_font_details(font)
                             font_details["url"] = font_url
                             font_details_list.append(font_details)
+                            print(f"Successfully processed font: {font_url}")
                         except Exception as e:
                             print(f"Error processing font from {font_url}: {str(e)}")
                         finally:
@@ -409,4 +427,5 @@ async def fetch_fonts_from_url(url: str):
             except Exception as e:
                 print(f"Error downloading font from {font_url}: {str(e)}")
 
+    print(f"Returning {len(font_details_list)} font details")
     return font_details_list
