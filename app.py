@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, Form, Depends, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -14,6 +14,8 @@ import time
 from urllib.parse import urlparse, urlunparse
 import json
 import pandas as pd
+import openpyxl
+from io import BytesIO
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -51,7 +53,7 @@ def normalize_url(url: str) -> str:
         url = 'https://' + url
     parsed = urlparse(url)
     if not parsed.netloc:
-        raise ValueError("Invalid URL: No cerevisiae specified")
+        raise ValueError("Invalid URL: No netloc specified")
     normalized = urlunparse((
         parsed.scheme or 'https',
         parsed.netloc,
@@ -314,6 +316,130 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
             "error": f"Error processing file: {str(e)}"
         })
 
+@app.get("/download-font-data", response_class=StreamingResponse)
+async def download_font_data(current_user: str = Depends(get_current_user)):
+    if not current_user:
+        return RedirectResponse(url="/", status_code=303)
+
+    try:
+        # Load font data
+        if not os.path.exists("font_data.json"):
+            return templates.TemplateResponse("main.html", {
+                "request": Request,
+                "error": "No font data available to download."
+            })
+
+        with open("font_data.json", "r") as f:
+            font_data = json.load(f)
+
+        # Create Excel workbook
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)  # Remove default sheet
+
+        # Headers for all sheets
+        headers = [
+            "Company", "Website URL", "Total Fonts", "Font Name", "Family",
+            "Subfamily", "Weight", "Designer", "Manufacturer", "Copyright",
+            "Font URL", "License Type", "Error"
+        ]
+
+        # Uploaded Fonts Sheet
+        ws_uploaded = wb.create_sheet("Uploaded Fonts")
+        ws_uploaded.append(headers)
+        for font in font_data.get("uploaded_fonts", []):
+            font_details = font.get("font_details", {})
+            ws_uploaded.append([
+                "N/A",  # Company
+                "N/A",  # Website URL
+                1,  # Total Fonts
+                font_details.get("full_name", "Unknown"),
+                font_details.get("family", "Unknown"),
+                font_details.get("subfamily", "Unknown"),
+                font_details.get("weight", "Unknown"),
+                font_details.get("designer", "Unknown"),
+                font_details.get("manufacturer", "Unknown"),
+                font_details.get("copyright", "Unknown"),
+                "N/A",  # Font URL
+                font_details.get("license_type", "Unknown"),
+                "-"  # Error
+            ])
+
+        # Fetched Fonts Sheet
+        ws_fetched = wb.create_sheet("Fetched Fonts")
+        ws_fetched.append(headers)
+        fetched_data = font_data.get("fetched_fonts", {})
+        for font in fetched_data.get("font_details_list", []):
+            ws_fetched.append([
+                fetched_data.get("company", "Unknown"),
+                fetched_data.get("website_url", "Unknown"),
+                fetched_data.get("total_fonts", 0),
+                font.get("full_name", "Unknown"),
+                font.get("family", "Unknown"),
+                font.get("subfamily", "Unknown"),
+                font.get("weight", "Unknown"),
+                font.get("designer", "Unknown"),
+                font.get("manufacturer", "Unknown"),
+                font.get("copyright", "Unknown"),
+                font.get("url", "N/A"),
+                font.get("license_type", "Unknown"),
+                "-"  # Error
+            ])
+
+        # Bulk Fetched Fonts Sheet
+        ws_bulk = wb.create_sheet("Bulk Fetched Fonts")
+        ws_bulk.append(headers)
+        for result in font_data.get("bulk_fetched", []):
+            if result.get("error"):
+                ws_bulk.append([
+                    result.get("company", "Unknown"),
+                    result.get("website_url", "Unknown"),
+                    0,
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    "N/A",
+                    result.get("license_type", "Unknown"),
+                    result.get("error", "-")
+                ])
+            else:
+                for font in result.get("font_details_list", []):
+                    ws_bulk.append([
+                        result.get("company", "Unknown"),
+                        result.get("website_url", "Unknown"),
+                        result.get("total_fonts", 0),
+                        font.get("full_name", "Unknown"),
+                        font.get("family", "Unknown"),
+                        font.get("subfamily", "Unknown"),
+                        font.get("weight", "Unknown"),
+                        font.get("designer", "Unknown"),
+                        font.get("manufacturer", "Unknown"),
+                        font.get("copyright", "Unknown"),
+                        font.get("url", "N/A"),
+                        font.get("license_type", "Unknown"),
+                        "-"  # Error
+                    ])
+
+        # Save workbook to BytesIO
+        output = BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        # Return StreamingResponse
+        return StreamingResponse(
+            content=output,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": "attachment; filename=font_data.xlsx"}
+        )
+    except Exception as e:
+        return templates.TemplateResponse("main.html", {
+            "request": Request,
+            "error": f"Error generating Excel file: {str(e)}"
+        })
+
 def extract_font_details(font: TTFont):
     name_table = font["name"]
     details = {}
@@ -412,7 +538,6 @@ async def fetch_fonts_from_url(url: str):
                         with open(temp_file_path, "wb") as f:
                             f.write(content)
                         try:
-                            # Let fontTools handle WOFF/WOFF2 directly
                             font = TTFont(temp_file_path)
                             font_details = extract_font_details(font)
                             font_details["url"] = font_url
