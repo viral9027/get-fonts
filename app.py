@@ -245,17 +245,11 @@ async def get_upload_file_redirect():
 @app.post("/upload-file", response_class=HTMLResponse)
 async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
     if not current_user:
-        return templates.TemplateResponse("login.html", {
-            "request": request,
-            "error": "Session expired. Please log in again."
-        })
+        return templates.TemplateResponse("login.html", {"request": request, "error": "Session expired. Please log in again."})
 
     try:
         if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx')):
-            return templates.TemplateResponse("main.html", {
-                "request": request,
-                "error": "Please upload a CSV or XLSX file."
-            })
+            return templates.TemplateResponse("main.html", {"request": request, "error": "Please upload a CSV or XLSX file."})
 
         content = await file.read()
         temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
@@ -272,10 +266,13 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
 
         expected_columns = ["Company", "Website"]
         if not all(col in df.columns for col in expected_columns):
-            return templates.TemplateResponse("main.html", {
-                "request": request,
-                "error": "File must contain 'Company' and 'Website' columns."
-            })
+            return templates.TemplateResponse("main.html", {"request": request, "error": "File must contain 'Company' and 'Website' columns."})
+
+        # Load existing data as fallback
+        existing_data = {}
+        if os.path.exists("font_data.json"):
+            with open("font_data.json", "r") as f:
+                existing_data = json.load(f).get("bulk_fetched", [])
 
         semaphore = asyncio.Semaphore(2)
         async def process_row(row):
@@ -293,6 +290,10 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": None
                     }
                 except Exception as e:
+                    # Fallback to existing data for this website if available
+                    for data in existing_data:
+                        if data.get("website_url") == website:
+                            return data
                     return {
                         "company": company,
                         "website_url": website,
@@ -306,16 +307,14 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
 
         save_font_data("bulk_fetched", bulk_results)
 
-        return templates.TemplateResponse("main.html", {
-            "request": request,
-            "bulk_results": bulk_results
-        })
+        return templates.TemplateResponse("main.html", {"request": request, "bulk_results": bulk_results})
     except Exception as e:
-        return templates.TemplateResponse("main.html", {
-            "request": request,
-            "error": f"Error processing file: {str(e)}"
-        })
-
+        # Serve existing data if available
+        if os.path.exists("font_data.json"):
+            with open("font_data.json", "r") as f:
+                existing_bulk = json.load(f).get("bulk_fetched", [])
+                return templates.TemplateResponse("main.html", {"request": request, "bulk_results": existing_bulk})
+        return templates.TemplateResponse("main.html", {"request": request, "error": f"Error processing file: {str(e)}"})
 @app.get("/download-font-data", response_class=StreamingResponse)
 async def download_font_data(current_user: str = Depends(get_current_user)):
     if not current_user:
