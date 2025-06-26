@@ -382,7 +382,7 @@ async def get_upload_file_redirect():
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/upload-file", response_class=HTMLResponse)
-async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(100), current_user: str = Depends(get_current_user)):
+async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(500), current_user: str = Depends(get_current_user)):
     if not current_user:
         return templates.TemplateResponse("login.html", {"request": request, "error": "Session expired. Please log in again."})
 
@@ -467,8 +467,8 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                         finally:
                             queue.task_done()
 
-                tasks = [process_queue() for _ in range(min(10, queue.qsize()))]  # Increased to 10 concurrent tasks
-                async with asyncio.timeout(45):
+                tasks = [process_queue() for _ in range(min(10, queue.qsize()))]
+                async with asyncio.timeout(200):  # 200 seconds timeout
                     await asyncio.gather(*tasks)
 
                 if queue.qsize() > 0:
