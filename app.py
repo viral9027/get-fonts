@@ -156,8 +156,11 @@ async def fetch_fonts_from_url(url: str, browser):
                 page.on("request", capture_fonts)
 
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=30000)  # 30 seconds timeout
-                    await page.wait_for_timeout(2000)
+                    await page.goto(url, wait_until="networkidle", timeout=15000)  # 15 seconds timeout
+                    await page.wait_for_timeout(1000)
+                    if not fonts:
+                        logger.warning(f"No fonts captured for {url}. Skipping download.")
+                        break
                     logger.info(f"Total fonts captured: {len(fonts)}")
                     break
                 except PlaywrightTimeoutError:
@@ -174,6 +177,9 @@ async def fetch_fonts_from_url(url: str, browser):
             if retry_count == max_retries:
                 logger.warning(f"Max retries reached for {url}. Proceeding with captured fonts.")
 
+    if not fonts:
+        return font_details_list
+
     async with aiohttp.ClientSession() as session:
         for font_url in fonts:
             try:
@@ -182,7 +188,7 @@ async def fetch_fonts_from_url(url: str, browser):
                     "Referer": url
                 }
                 logger.info(f"Downloading font from: {font_url}")
-                async with session.get(font_url, timeout=15, headers=headers) as response:
+                async with session.get(font_url, timeout=10, headers=headers) as response:
                     if response.status == 200:
                         content = await response.read()
                         temp_file_path = f"temp_font_{secrets.token_hex(4)}"
@@ -376,7 +382,7 @@ async def get_upload_file_redirect():
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/upload-file", response_class=HTMLResponse)
-async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
+async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(100), current_user: str = Depends(get_current_user)):
     if not current_user:
         return templates.TemplateResponse("login.html", {"request": request, "error": "Session expired. Please log in again."})
 
@@ -420,7 +426,8 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
             )
             try:
                 async def process_queue():
-                    while not queue.empty():
+                    processed = 0
+                    while not queue.empty() and processed < batch_size:
                         company, website = await queue.get()
                         try:
                             normalized_url = normalize_url(website)
@@ -433,6 +440,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                                 "font_details_list": font_details_list,
                                 "error": None
                             })
+                            processed += 1
                         except asyncio.TimeoutError:
                             logger.error(f"Timeout fetching fonts from {website}")
                             bulk_results.append({
@@ -459,14 +467,12 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         finally:
                             queue.task_done()
 
-                # Limit to 5 concurrent tasks
-                tasks = [process_queue() for _ in range(min(5, queue.qsize()))]
-                # Set a 45-second overall timeout for the request
+                tasks = [process_queue() for _ in range(min(10, queue.qsize()))]  # Increased to 10 concurrent tasks
                 async with asyncio.timeout(45):
                     await asyncio.gather(*tasks)
 
                 if queue.qsize() > 0:
-                    logger.warning(f"Processed {len(bulk_results)} URLs. {queue.qsize()} remaining due to timeout.")
+                    logger.warning(f"Processed {len(bulk_results)} URLs. {queue.qsize()} remaining. Submit another batch.")
 
             finally:
                 await browser.close()
