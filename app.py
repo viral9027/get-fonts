@@ -132,7 +132,6 @@ async def fetch_fonts_from_url(url: str, browser):
     retry_count = 0
     fonts = []
 
-    # Log resource usage
     soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
     logger.info(f"Current file descriptor limits: soft={soft_limit}, hard={hard_limit}")
 
@@ -141,7 +140,7 @@ async def fetch_fonts_from_url(url: str, browser):
             page = await browser.new_page()
             try:
                 await page.set_extra_http_headers({
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
                 })
                 await page.route("**/*", lambda route: route.abort() if route.request.resource_type == "image" else route.continue_())
 
@@ -157,8 +156,8 @@ async def fetch_fonts_from_url(url: str, browser):
                 page.on("request", capture_fonts)
 
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=120000)
-                    await page.wait_for_timeout(5000)
+                    await page.goto(url, wait_until="networkidle", timeout=30000)  # 30 seconds timeout
+                    await page.wait_for_timeout(2000)
                     logger.info(f"Total fonts captured: {len(fonts)}")
                     break
                 except PlaywrightTimeoutError:
@@ -179,11 +178,11 @@ async def fetch_fonts_from_url(url: str, browser):
         for font_url in fonts:
             try:
                 headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
                     "Referer": url
                 }
                 logger.info(f"Downloading font from: {font_url}")
-                async with session.get(font_url, timeout=30, headers=headers) as response:
+                async with session.get(font_url, timeout=15, headers=headers) as response:
                     if response.status == 200:
                         content = await response.read()
                         temp_file_path = f"temp_font_{secrets.token_hex(4)}"
@@ -330,7 +329,8 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
             browser = await p.chromium.launch(
                 headless=True,
                 args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
-                chromium_sandbox=False
+                chromium_sandbox=False,
+                timeout=60000
             )
             try:
                 font_details_list = await fetch_fonts_from_url(normalized_url, browser)
@@ -407,45 +407,80 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 existing_data = json.load(f).get("bulk_fetched", [])
 
         bulk_results = []
+        queue = asyncio.Queue()
+        for _, row in df.iterrows():
+            queue.put_nowait((row["Company"].strip(), row["Website"].strip()))
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
                 args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
-                chromium_sandbox=False
+                chromium_sandbox=False,
+                timeout=60000
             )
             try:
-                for _, row in df.iterrows():
-                    company = str(row["Company"]).strip()
-                    website = str(row["Website"]).strip()
-                    try:
-                        normalized_url = normalize_url(website)
-                        font_details_list = await fetch_fonts_from_url(normalized_url, browser)
-                        bulk_results.append({
-                            "company": company,
-                            "website_url": normalized_url,
-                            "total_fonts": len(font_details_list) if font_details_list else 0,
-                            "font_details_list": font_details_list,
-                            "error": None
-                        })
-                    except Exception as e:
-                        for data in existing_data:
-                            if data.get("website_url") == website:
-                                bulk_results.append(data)
-                                break
-                        else:
+                async def process_queue():
+                    while not queue.empty():
+                        company, website = await queue.get()
+                        try:
+                            normalized_url = normalize_url(website)
+                            async with asyncio.timeout(30):
+                                font_details_list = await fetch_fonts_from_url(normalized_url, browser)
+                            bulk_results.append({
+                                "company": company,
+                                "website_url": normalized_url,
+                                "total_fonts": len(font_details_list) if font_details_list else 0,
+                                "font_details_list": font_details_list,
+                                "error": None
+                            })
+                        except asyncio.TimeoutError:
+                            logger.error(f"Timeout fetching fonts from {website}")
                             bulk_results.append({
                                 "company": company,
                                 "website_url": website,
                                 "total_fonts": 0,
                                 "font_details_list": [],
-                                "error": f"Error fetching fonts from {website}: {str(e)}"
+                                "error": f"Timeout fetching fonts from {website}"
                             })
+                        except Exception as e:
+                            logger.error(f"Error fetching fonts from {website}: {str(e)}")
+                            for data in existing_data:
+                                if data.get("website_url") == website:
+                                    bulk_results.append(data)
+                                    break
+                            else:
+                                bulk_results.append({
+                                    "company": company,
+                                    "website_url": website,
+                                    "total_fonts": 0,
+                                    "font_details_list": [],
+                                    "error": f"Error fetching fonts from {website}: {str(e)}"
+                                })
+                        finally:
+                            queue.task_done()
+
+                # Limit to 5 concurrent tasks
+                tasks = [process_queue() for _ in range(min(5, queue.qsize()))]
+                # Set a 45-second overall timeout for the request
+                async with asyncio.timeout(45):
+                    await asyncio.gather(*tasks)
+
+                if queue.qsize() > 0:
+                    logger.warning(f"Processed {len(bulk_results)} URLs. {queue.qsize()} remaining due to timeout.")
+
             finally:
                 await browser.close()
 
         save_font_data("bulk_fetched", bulk_results)
 
         return templates.TemplateResponse("main.html", {"request": request, "bulk_results": bulk_results})
+    except asyncio.TimeoutError:
+        logger.error("Overall request timeout exceeded")
+        if os.path.exists("font_data.json"):
+            with open("font_data.json", "r") as f:
+                existing_bulk = json.load(f).get("bulk_fetched", [])
+                return templates.TemplateResponse("main.html", {"request": request, "bulk_results": existing_bulk})
+        return templates.TemplateResponse("main.html", {"request": request, "error": "Request timed out"})
     except Exception as e:
         logger.error(f"Error processing file: {str(e)}")
         if os.path.exists("font_data.json"):
