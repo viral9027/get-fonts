@@ -137,9 +137,8 @@ def extract_font_details(font: TTFont):
         "weight": weight
     }
 
-async def fetch_fonts_from_url(url: str, browser):
+async def fetch_fonts_from_url(url: str, browser, max_retries: int = 3):
     font_details_list = []
-    max_retries = 3
     retry_count = 0
     fonts = []
 
@@ -162,19 +161,16 @@ async def fetch_fonts_from_url(url: str, browser):
                             logger.info(f"Skipping unsupported font format: {font_url}")
 
                 page.on("request", capture_fonts)
-
-                # Capture console errors for debugging
                 page.on("response", lambda response: logger.info(f"Response: {response.url} - {response.status}"))
 
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=90000)
+                    await page.goto(url, wait_until="networkidle", timeout=30000)
                     await page.wait_for_timeout(2000)
-                    # Check for dynamically loaded fonts
                     font_families = await page.evaluate("document.fonts.ready.then(() => Array.from(document.fonts).map(font => font.family))")
                     logger.info(f"Dynamic fonts detected: {font_families}")
                     if not fonts:
                         logger.warning(f"No fonts captured for {url}. Waiting longer...")
-                        await page.wait_for_timeout(9000)
+                        await page.wait_for_timeout(5000)
                     logger.info(f"Total fonts captured: {len(fonts)}")
                     break
                 except PlaywrightTimeoutError:
@@ -208,7 +204,7 @@ async def fetch_fonts_from_url(url: str, browser):
                     "Referer": url
                 }
                 logger.info(f"Downloading font from: {font_url}")
-                async with session.get(font_url, timeout=60, headers=headers) as response:
+                async with session.get(font_url, timeout=30, headers=headers) as response:
                     if response.status == 200:
                         content = await response.read()
                         temp_file_path = f"temp_font_{secrets.token_hex(4)}"
@@ -365,7 +361,7 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
                 headless=True,
                 args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
                 chromium_sandbox=False,
-                timeout=90000
+                timeout=30000
             )
             try:
                 font_details_list = await fetch_fonts_from_url(normalized_url, browser)
@@ -413,7 +409,7 @@ async def get_upload_file_redirect():
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/upload-file", response_class=HTMLResponse)
-async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(500), current_user: str = Depends(get_current_user)):
+async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(50), current_user: str = Depends(get_current_user)):
     if not current_user:
         logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {"request": request, "error": "Session expired or invalid. Please log in again."})
@@ -441,85 +437,98 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
             logger.warning("Missing required columns in uploaded file")
             return templates.TemplateResponse("main.html", {"request": request, "error": "File must contain 'Company' and 'Website' columns."})
 
+        # Load existing data to avoid reprocessing
         existing_data = {}
+        processed_urls = set()
         if os.path.exists("font_data.json"):
             with open("font_data.json", "r") as f:
-                existing_data = json.load(f).get("bulk_fetched", [])
+                existing_data = json.load(f)
+                for result in existing_data.get("bulk_fetched", []):
+                    processed_urls.add(result.get("website_url"))
 
-        bulk_results = []
+        bulk_results = existing_data.get("bulk_fetched", [])
         queue = asyncio.Queue()
         for _, row in df.iterrows():
-            queue.put_nowait((row["Company"].strip(), row["Website"].strip()))
+            website = row["Website"].strip()
+            if website not in processed_urls:
+                queue.put_nowait((row["Company"].strip(), website))
+
+        logger.info(f"Total URLs to process: {queue.qsize()}")
+
+        async def process_batch(batch_urls, browser):
+            batch_results = []
+            tasks = []
+            for company, website in batch_urls:
+                try:
+                    normalized_url = normalize_url(website)
+                    tasks.append(asyncio.create_task(fetch_fonts_from_url(normalized_url, browser, max_retries=2)))
+                except ValueError as e:
+                    logger.error(f"Invalid URL {website}: {str(e)}")
+                    batch_results.append({
+                        "company": company,
+                        "website_url": website,
+                        "total_fonts": 0,
+                        "font_details_list": [],
+                        "error": f"Invalid URL: {str(e)}"
+                    })
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for (company, website), result in zip(batch_urls, results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error fetching fonts from {website}: {str(result)}")
+                    batch_results.append({
+                        "company": company,
+                        "website_url": website,
+                        "total_fonts": 0,
+                        "font_details_list": [],
+                        "error": f"Error: {str(result)}"
+                    })
+                else:
+                    batch_results.append({
+                        "company": company,
+                        "website_url": website,
+                        "total_fonts": len(result) if result else 0,
+                        "font_details_list": result,
+                        "error": None
+                    })
+            return batch_results
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
                 args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
                 chromium_sandbox=False,
-                timeout=90000
+                timeout=30000
             )
             try:
-                async def process_queue():
-                    processed = 0
-                    while not queue.empty() and processed < batch_size:
-                        company, website = await queue.get()
-                        try:
-                            normalized_url = normalize_url(website)
-                            font_details_list = await asyncio.wait_for(
-                                fetch_fonts_from_url(normalized_url, browser), timeout=150
-                            )
-                            bulk_results.append({
-                                "company": company,
-                                "website_url": normalized_url,
-                                "total_fonts": len(font_details_list) if font_details_list else 0,
-                                "font_details_list": font_details_list,
-                                "error": None
-                            })
-                            processed += 1
-                        except Exception as e:
-                            logger.error(f"Error fetching fonts from {website}: {str(e)}")
-                            for data in existing_data:
-                                if data.get("website_url") == website:
-                                    bulk_results.append(data)
-                                    break
-                            else:
-                                bulk_results.append({
-                                    "company": company,
-                                    "website_url": website,
-                                    "total_fonts": 0,
-                                    "font_details_list": [],
-                                    "error": f"Error fetching fonts from {website}: {str(e)}"
-                                })
-                            processed += 1
-                        finally:
-                            queue.task_done()
+                while not queue.empty():
+                    batch_urls = []
+                    for _ in range(min(batch_size, queue.qsize())):
+                        batch_urls.append(await queue.get())
 
-                tasks = [process_queue() for _ in range(min(10, queue.qsize()))]
-                try:
-                    await asyncio.wait_for(asyncio.gather(*tasks), timeout=200)
-                except asyncio.TimeoutError:
-                    logger.warning(f"Processed {len(bulk_results)} URLs. {queue.qsize()} remaining. Submit another batch.")
+                    batch_results = await process_batch(batch_urls, browser)
+                    bulk_results.extend(batch_results)
+
+                    # Save progress incrementally
+                    save_font_data("bulk_fetched", bulk_results)
+                    logger.info(f"Processed batch of {len(batch_urls)} URLs. Total processed: {len(bulk_results)}")
+
+                    # Release resources periodically
+                    await asyncio.sleep(1)
 
             finally:
                 await browser.close()
 
-        save_font_data("bulk_fetched", bulk_results)
         logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
         return templates.TemplateResponse("main.html", {"request": request, "bulk_results": bulk_results})
-    except asyncio.TimeoutError:
-        logger.error("Overall request timeout exceeded")
-        if os.path.exists("font_data.json"):
-            with open("font_data.json", "r") as f:
-                existing_bulk = json.load(f).get("bulk_fetched", [])
-                return templates.TemplateResponse("main.html", {"request": request, "bulk_results": existing_bulk})
-        return templates.TemplateResponse("main.html", {"request": request, "error": "Request timed out"})
+
     except Exception as e:
         logger.error(f"Error processing file: {str(e)}")
-        if os.path.exists("font_data.json"):
-            with open("font_data.json", "r") as f:
-                existing_bulk = json.load(f).get("bulk_fetched", [])
-                return templates.TemplateResponse("main.html", {"request": request, "bulk_results": existing_bulk})
-        return templates.TemplateResponse("main.html", {"request": request, "error": f"Error processing file: {str(e)}"})
+        return templates.TemplateResponse("main.html", {
+            "request": request,
+            "error": f"Error processing file: {str(e)}",
+            "bulk_results": existing_data.get("bulk_fetched", []) if os.path.exists("font_data.json") else []
+        })
 
 @app.get("/download-font-data", response_class=StreamingResponse)
 async def download_font_data(request: Request, current_user: str = Depends(get_current_user)):
@@ -650,15 +659,11 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
             "error": "Session expired or invalid. Please log in again."
         })
     try:
-        # Preserve the current user's session
         session_id = request.cookies.get("session_id")
         current_session = sessions.get(session_id, None)
-        # Clear all sessions
         sessions.clear()
-        # Restore the current user's session if it exists
         if current_session:
             sessions[session_id] = current_session
-        # Reset font_data.json to empty structure
         empty_data = {"uploaded_fonts": [], "fetched_fonts": [], "bulk_fetched": []}
         with open("font_data.json", "w") as f:
             json.dump(empty_data, f, indent=4)
