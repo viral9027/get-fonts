@@ -164,7 +164,7 @@ async def fetch_fonts_from_url(url: str, browser, max_retries: int = 3):
                 page.on("response", lambda response: logger.info(f"Response: {response.url} - {response.status}"))
 
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=30000)
+                    await page.goto(url, wait_until="networkidle", timeout=90000)
                     await page.wait_for_timeout(2000)
                     font_families = await page.evaluate("document.fonts.ready.then(() => Array.from(document.fonts).map(font => font.family))")
                     logger.info(f"Dynamic fonts detected: {font_families}")
@@ -204,7 +204,7 @@ async def fetch_fonts_from_url(url: str, browser, max_retries: int = 3):
                     "Referer": url
                 }
                 logger.info(f"Downloading font from: {font_url}")
-                async with session.get(font_url, timeout=30, headers=headers) as response:
+                async with session.get(font_url, timeout=60, headers=headers) as response:
                     if response.status == 200:
                         content = await response.read()
                         temp_file_path = f"temp_font_{secrets.token_hex(4)}"
@@ -361,7 +361,7 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
                 headless=True,
                 args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
                 chromium_sandbox=False,
-                timeout=30000
+                timeout=90000
             )
             try:
                 font_details_list = await fetch_fonts_from_url(normalized_url, browser)
@@ -498,7 +498,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                 headless=True,
                 args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
                 chromium_sandbox=False,
-                timeout=30000
+                timeout=90000
             )
             try:
                 while not queue.empty():
