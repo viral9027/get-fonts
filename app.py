@@ -1,3 +1,6 @@
+import asyncio
+import logging
+import resource
 from fastapi import FastAPI, File, UploadFile, Form, Depends, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -6,7 +9,6 @@ from pydantic import BaseModel
 from fontTools.ttLib import TTFont
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 import aiohttp
-import asyncio
 import os
 import hashlib
 import secrets
@@ -16,12 +18,18 @@ import json
 import pandas as pd
 import openpyxl
 from io import BytesIO
-import resource
-import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Increase file descriptor limit
+try:
+    soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (4096, hard_limit))
+    logger.info(f"Updated file descriptor limit: {resource.getrlimit(resource.RLIMIT_NOFILE)}")
+except Exception as e:
+    logger.warning(f"Failed to increase file descriptor limit: {str(e)}")
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -42,8 +50,11 @@ class LoginData(BaseModel):
 
 def get_current_user(request: Request):
     session_id = request.cookies.get("session_id")
-    if not session_id or session_id not in sessions:
-        logger.info(f"No session found for session_id: {session_id}")
+    if not session_id:
+        logger.info("No session_id cookie found in request")
+        return None
+    if session_id not in sessions:
+        logger.info(f"Session_id {session_id} not found in sessions")
         return None
     session_data = sessions.get(session_id)
     if not session_data or time.time() - session_data["created_at"] > 3600:
@@ -128,12 +139,9 @@ def extract_font_details(font: TTFont):
 
 async def fetch_fonts_from_url(url: str, browser):
     font_details_list = []
-    max_retries = 2
+    max_retries = 3
     retry_count = 0
     fonts = []
-
-    soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
-    logger.info(f"Current file descriptor limits: soft={soft_limit}, hard={hard_limit}")
 
     while retry_count < max_retries:
         try:
@@ -142,7 +150,7 @@ async def fetch_fonts_from_url(url: str, browser):
                 await page.set_extra_http_headers({
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
                 })
-                await page.route("**/*", lambda route: route.abort() if route.request.resource_type == "image" else route.continue_())
+                await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media"] else route.continue_())
 
                 async def capture_fonts(request):
                     if request.resource_type == "font":
@@ -155,20 +163,31 @@ async def fetch_fonts_from_url(url: str, browser):
 
                 page.on("request", capture_fonts)
 
+                # Capture console errors for debugging
+                page.on("response", lambda response: logger.info(f"Response: {response.url} - {response.status}"))
+
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=15000)  # 15 seconds timeout
-                    await page.wait_for_timeout(1000)
+                    await page.goto(url, wait_until="networkidle", timeout=90000)
+                    await page.wait_for_timeout(2000)
+                    # Check for dynamically loaded fonts
+                    font_families = await page.evaluate("document.fonts.ready.then(() => Array.from(document.fonts).map(font => font.family))")
+                    logger.info(f"Dynamic fonts detected: {font_families}")
                     if not fonts:
-                        logger.warning(f"No fonts captured for {url}. Skipping download.")
-                        break
+                        logger.warning(f"No fonts captured for {url}. Waiting longer...")
+                        await page.wait_for_timeout(9000)
                     logger.info(f"Total fonts captured: {len(fonts)}")
                     break
                 except PlaywrightTimeoutError:
                     logger.warning(f"Timeout navigating to {url}. Proceeding with captured fonts.")
                     break
                 except Exception as e:
-                    logger.error(f"Error navigating to {url}: {str(e)}. Retrying ({retry_count + 1}/{max_retries})...")
-                    retry_count += 1
+                    if "net::ERR_NETWORK_CHANGED" in str(e):
+                        logger.warning(f"Network change detected for {url}. Retrying ({retry_count + 1}/{max_retries})...")
+                        retry_count += 1
+                        await asyncio.sleep(2)
+                    else:
+                        logger.error(f"Unexpected error navigating to {url}: {str(e)}. Retrying ({retry_count + 1}/{max_retries})...")
+                        retry_count += 1
             finally:
                 await page.close()
         except Exception as e:
@@ -178,6 +197,7 @@ async def fetch_fonts_from_url(url: str, browser):
                 logger.warning(f"Max retries reached for {url}. Proceeding with captured fonts.")
 
     if not fonts:
+        logger.warning(f"No fonts found for {url}.")
         return font_details_list
 
     async with aiohttp.ClientSession() as session:
@@ -188,7 +208,7 @@ async def fetch_fonts_from_url(url: str, browser):
                     "Referer": url
                 }
                 logger.info(f"Downloading font from: {font_url}")
-                async with session.get(font_url, timeout=10, headers=headers) as response:
+                async with session.get(font_url, timeout=60, headers=headers) as response:
                     if response.status == 200:
                         content = await response.read()
                         temp_file_path = f"temp_font_{secrets.token_hex(4)}"
@@ -211,11 +231,10 @@ async def fetch_fonts_from_url(url: str, browser):
                         finally:
                             os.remove(temp_file_path)
                     else:
-                        logger.warning(f"Failed to download font from {font_url}: HTTP {response.status}. Possibly CORS-restricted.")
+                        logger.warning(f"Failed to download font from {font_url}: HTTP {response.status}.")
             except Exception as e:
                 logger.error(f"Error downloading font from {font_url}: {str(e)}")
 
-    logger.info(f"Returning {len(font_details_list)} font details")
     return font_details_list
 
 @app.get("/", response_class=HTMLResponse)
@@ -227,12 +246,14 @@ async def get_login_redirect():
     return RedirectResponse(url="/", status_code=303)
 
 @app.post("/login", response_class=HTMLResponse)
-async def login(response: Response, email: str = Form(...), password: str = Form(...)):
+async def login(response: Response, request: Request, email: str = Form(""), password: str = Form("")):
+    logger.info(f"Login attempt with email: {email}")
     user = users_db.get(email)
     hashed_password = hashlib.sha256(password.encode()).hexdigest()
     if not user or user["hashed_password"] != hashed_password:
+        logger.warning(f"Login failed for email: {email}")
         return templates.TemplateResponse("login.html", {
-            "request": Request,
+            "request": request,
             "error": "Invalid credentials"
         })
 
@@ -241,23 +262,27 @@ async def login(response: Response, email: str = Form(...), password: str = Form
         "email": email,
         "created_at": time.time()
     }
+    logger.info(f"Session created with session_id: {session_id} for email: {email}")
     response = RedirectResponse(url="/main", status_code=303)
-    response.set_cookie(key="session_id", value=session_id, httponly=True, secure=False)
+    response.set_cookie(key="session_id", value=session_id, httponly=True, secure=False, samesite="Lax")
     return response
 
 @app.get("/main", response_class=HTMLResponse)
 async def get_main(request: Request, current_user: str = Depends(get_current_user)):
     if not current_user:
+        logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
             "request": request,
-            "error": "Session expired. Please log in again."
+            "error": "Session expired or invalid. Please log in again."
         })
+    logger.info(f"Rendering main page for user: {current_user}")
     return templates.TemplateResponse("main.html", {"request": request})
 
 @app.get("/logout", response_class=RedirectResponse)
 async def logout(request: Request, response: Response):
     session_id = request.cookies.get("session_id")
     if session_id in sessions:
+        logger.info(f"Logging out session_id: {session_id}")
         del sessions[session_id]
     response = RedirectResponse(url="/", status_code=303)
     response.delete_cookie("session_id")
@@ -270,12 +295,14 @@ async def get_upload_font_redirect():
 @app.post("/upload-font", response_class=HTMLResponse)
 async def upload_font(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
     if not current_user:
+        logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
             "request": request,
-            "error": "Session expired. Please log in again."
+            "error": "Session expired or invalid. Please log in again."
         })
     try:
         if not file.filename.lower().endswith(('.ttf', '.otf', '.woff', '.woff2')):
+            logger.warning(f"Unsupported font format: {file.filename}")
             return templates.TemplateResponse("main.html", {
                 "request": request,
                 "error": "Unsupported font format. Please upload a .ttf, .otf, .woff, or .woff2 file."
@@ -306,6 +333,7 @@ async def upload_font(request: Request, file: UploadFile = File(...), current_us
             "font_details": font_details
         })
 
+        logger.info(f"Successfully uploaded font: {file.filename}")
         return templates.TemplateResponse("main.html", {
             "request": request,
             "font_details": font_details,
@@ -325,9 +353,10 @@ async def get_fetch_fonts_redirect():
 @app.post("/fetch-fonts", response_class=HTMLResponse)
 async def fetch_fonts(request: Request, url: str = Form(...), current_user: str = Depends(get_current_user)):
     if not current_user:
+        logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
             "request": request,
-            "error": "Session expired. Please log in again."
+            "error": "Session expired or invalid. Please log in again."
         })
     try:
         normalized_url = normalize_url(url)
@@ -336,7 +365,7 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
                 headless=True,
                 args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
                 chromium_sandbox=False,
-                timeout=60000
+                timeout=90000
             )
             try:
                 font_details_list = await fetch_fonts_from_url(normalized_url, browser)
@@ -352,11 +381,13 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
             })
 
             if not font_details_list:
+                logger.warning(f"No fonts found on {normalized_url}")
                 return templates.TemplateResponse("main.html", {
                     "request": request,
                     "error": f"No fonts found on {normalized_url}. The website might not use downloadable fonts, or they are protected by CORS."
                 })
 
+            logger.info(f"Successfully fetched {len(font_details_list)} fonts from {normalized_url}")
             return templates.TemplateResponse("main.html", {
                 "request": request,
                 "font_details_list": font_details_list,
@@ -384,10 +415,12 @@ async def get_upload_file_redirect():
 @app.post("/upload-file", response_class=HTMLResponse)
 async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(500), current_user: str = Depends(get_current_user)):
     if not current_user:
-        return templates.TemplateResponse("login.html", {"request": request, "error": "Session expired. Please log in again."})
+        logger.warning("No valid user session, redirecting to login")
+        return templates.TemplateResponse("login.html", {"request": request, "error": "Session expired or invalid. Please log in again."})
 
     try:
         if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx')):
+            logger.warning(f"Invalid file format: {file.filename}")
             return templates.TemplateResponse("main.html", {"request": request, "error": "Please upload a CSV or XLSX file."})
 
         content = await file.read()
@@ -405,6 +438,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
 
         expected_columns = ["Company", "Website"]
         if not all(col in df.columns for col in expected_columns):
+            logger.warning("Missing required columns in uploaded file")
             return templates.TemplateResponse("main.html", {"request": request, "error": "File must contain 'Company' and 'Website' columns."})
 
         existing_data = {}
@@ -422,7 +456,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                 headless=True,
                 args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
                 chromium_sandbox=False,
-                timeout=60000
+                timeout=90000
             )
             try:
                 async def process_queue():
@@ -431,8 +465,9 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                         company, website = await queue.get()
                         try:
                             normalized_url = normalize_url(website)
-                            async with asyncio.timeout(30):
-                                font_details_list = await fetch_fonts_from_url(normalized_url, browser)
+                            font_details_list = await asyncio.wait_for(
+                                fetch_fonts_from_url(normalized_url, browser), timeout=150
+                            )
                             bulk_results.append({
                                 "company": company,
                                 "website_url": normalized_url,
@@ -441,15 +476,6 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                                 "error": None
                             })
                             processed += 1
-                        except asyncio.TimeoutError:
-                            logger.error(f"Timeout fetching fonts from {website}")
-                            bulk_results.append({
-                                "company": company,
-                                "website_url": website,
-                                "total_fonts": 0,
-                                "font_details_list": [],
-                                "error": f"Timeout fetching fonts from {website}"
-                            })
                         except Exception as e:
                             logger.error(f"Error fetching fonts from {website}: {str(e)}")
                             for data in existing_data:
@@ -464,21 +490,21 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                                     "font_details_list": [],
                                     "error": f"Error fetching fonts from {website}: {str(e)}"
                                 })
+                            processed += 1
                         finally:
                             queue.task_done()
 
                 tasks = [process_queue() for _ in range(min(10, queue.qsize()))]
-                async with asyncio.timeout(200):  # 200 seconds timeout
-                    await asyncio.gather(*tasks)
-
-                if queue.qsize() > 0:
+                try:
+                    await asyncio.wait_for(asyncio.gather(*tasks), timeout=200)
+                except asyncio.TimeoutError:
                     logger.warning(f"Processed {len(bulk_results)} URLs. {queue.qsize()} remaining. Submit another batch.")
 
             finally:
                 await browser.close()
 
         save_font_data("bulk_fetched", bulk_results)
-
+        logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
         return templates.TemplateResponse("main.html", {"request": request, "bulk_results": bulk_results})
     except asyncio.TimeoutError:
         logger.error("Overall request timeout exceeded")
@@ -496,14 +522,16 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
         return templates.TemplateResponse("main.html", {"request": request, "error": f"Error processing file: {str(e)}"})
 
 @app.get("/download-font-data", response_class=StreamingResponse)
-async def download_font_data(current_user: str = Depends(get_current_user)):
+async def download_font_data(request: Request, current_user: str = Depends(get_current_user)):
     if not current_user:
+        logger.warning("No valid user session, redirecting to login")
         return RedirectResponse(url="/", status_code=303)
 
     try:
         if not os.path.exists("font_data.json"):
+            logger.warning("No font data available to download")
             return templates.TemplateResponse("main.html", {
-                "request": Request,
+                "request": request,
                 "error": "No font data available to download."
             })
 
@@ -600,6 +628,7 @@ async def download_font_data(current_user: str = Depends(get_current_user)):
         wb.save(output)
         output.seek(0)
 
+        logger.info("Font data Excel file generated successfully")
         return StreamingResponse(
             content=output,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -608,6 +637,43 @@ async def download_font_data(current_user: str = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Error generating Excel file: {str(e)}")
         return templates.TemplateResponse("main.html", {
-            "request": Request,
+            "request": request,
             "error": f"Error generating Excel file: {str(e)}"
         })
+
+@app.post("/clear-font-data", response_class=HTMLResponse)
+async def clear_font_data(request: Request, current_user: str = Depends(get_current_user)):
+    if not current_user:
+        logger.warning("No valid user session, redirecting to login")
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": "Session expired or invalid. Please log in again."
+        })
+    try:
+        # Preserve the current user's session
+        session_id = request.cookies.get("session_id")
+        current_session = sessions.get(session_id, None)
+        # Clear all sessions
+        sessions.clear()
+        # Restore the current user's session if it exists
+        if current_session:
+            sessions[session_id] = current_session
+        # Reset font_data.json to empty structure
+        empty_data = {"uploaded_fonts": [], "fetched_fonts": [], "bulk_fetched": []}
+        with open("font_data.json", "w") as f:
+            json.dump(empty_data, f, indent=4)
+        logger.info("Font data and sessions (except current user) cleared successfully")
+        return templates.TemplateResponse("main.html", {
+            "request": request,
+            "message": "All font data and sessions cleared successfully."
+        })
+    except Exception as e:
+        logger.error(f"Error clearing font data: {str(e)}")
+        return templates.TemplateResponse("main.html", {
+            "request": request,
+            "error": f"Error clearing font data: {str(e)}"
+        })
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000, workers=1)

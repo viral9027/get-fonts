@@ -38,6 +38,9 @@
             <h1 class="text-3xl font-bold">Font Analyzer</h1>
             <div class="space-x-4">
                 <a href="/download-font-data" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md">Download Font Data</a>
+                <form id="clear-font-data-form" action="/clear-font-data" method="post" style="display: inline;">
+                    <button type="submit" onclick="return confirm('Are you sure you want to clear all font data and sessions?');" class="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-4 rounded-md">Clear All Data</button>
+                </form>
                 <a href="/logout" onclick="return confirm('Are you sure you want to logout?');" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md">Logout</a>
             </div>
         </div>
@@ -84,6 +87,14 @@
                 </form>
             </div>
         </div>
+
+        <!-- Message Display -->
+        {% if message %}
+        <div class="mt-6 bg-green-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Success</h2>
+            <p>{{ message }}</p>
+        </div>
+        {% endif %}
 
         <!-- Error Message Display -->
         {% if error %}
@@ -258,6 +269,7 @@
         const uploadFontForm = document.getElementById('upload-font-form');
         const fetchFontsForm = document.getElementById('fetch-fonts-form');
         const uploadFileForm = document.getElementById('upload-file-form');
+        const clearFontDataForm = document.getElementById('clear-font-data-form');
 
         uploadFontForm.addEventListener('submit', () => {
             loader.classList.remove('hidden');
@@ -268,6 +280,10 @@
         });
 
         uploadFileForm.addEventListener('submit', () => {
+            loader.classList.remove('hidden');
+        });
+
+        clearFontDataForm.addEventListener('submit', () => {
             loader.classList.remove('hidden');
         });
 
