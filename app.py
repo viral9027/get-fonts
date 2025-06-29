@@ -162,7 +162,7 @@ async def fetch_fonts_from_url(url: str, max_retries: int = 2):
                     })
                     await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media"] else route.continue_())
 
-                    async def capture_fonts(request):
+                    async def   capture_fonts(request):
                         if request.resource_type == "font":
                             font_url = request.url.lower()
                             logger.info(f"Captured font request: {font_url}")
@@ -175,7 +175,7 @@ async def fetch_fonts_from_url(url: str, max_retries: int = 2):
                     page.on("response", lambda response: logger.info(f"Response: {response.url} - {response.status}"))
 
                     try:
-                        await page.goto(url, wait_until="networkidle", timeout=60000)
+                        await asyncio.wait_for(page.goto(url, wait_until="networkidle", timeout=30000), timeout=35)
                         await page.wait_for_timeout(9000)
                         font_families = await page.evaluate("document.fonts.ready.then(() => Array.from(document.fonts).map(font => font.family))")
                         logger.info(f"Dynamic fonts detected: {font_families}")
@@ -423,6 +423,102 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
 async def get_upload_file_redirect():
     return RedirectResponse(url="/", status_code=303)
 
+# @app.post("/upload-file", response_class=HTMLResponse)
+# async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(20), current_user: str = Depends(get_current_user)):
+#     if not current_user:
+#         logger.warning("No valid user session, redirecting to login")
+#         return templates.TemplateResponse("login.html", {"request": request, "error": "Session expired or invalid. Please log in again."})
+#
+#     try:
+#         if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx')):
+#             logger.warning(f"Invalid file format: {file.filename}")
+#             return templates.TemplateResponse("main.html", {"request": request, "error": "Please upload a CSV or XLSX file."})
+#
+#         content = await file.read()
+#         temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
+#         with open(temp_file_path, "wb") as f:
+#             f.write(content)
+#
+#         try:
+#             if file.filename.endswith('.csv'):
+#                 df = pd.read_csv(temp_file_path)
+#             else:
+#                 df = pd.read_excel(temp_file_path, engine='openpyxl')
+#         finally:
+#             if os.path.exists(temp_file_path):
+#                 os.remove(temp_file_path)
+#
+#         expected_columns = ["Company", "Website"]
+#         if not all(col in df.columns for col in expected_columns):
+#             logger.warning("Missing required columns in uploaded file")
+#             return templates.TemplateResponse("main.html", {"request": request, "error": "File must contain 'Company' and 'Website' columns."})
+#
+#         # Load existing data to avoid reprocessing
+#         existing_data = {}
+#         processed_urls = set()
+#         if os.path.exists("font_data.json"):
+#             with open("font_data.json", "r") as f:
+#                 existing_data = json.load(f)
+#                 for result in existing_data.get("bulk_fetched", []):
+#                     processed_urls.add(result.get("website_url"))
+#
+#         bulk_results = existing_data.get("bulk_fetched", [])
+#         queue = []
+#         for _, row in df.iterrows():
+#             website = row["Website"].strip()
+#             if website not in processed_urls:
+#                 queue.append((row["Company"].strip(), website))
+#
+#         logger.info(f"Total URLs to process: {len(queue)}")
+#
+#         for i in range(0, len(queue), batch_size):
+#             batch_urls = queue[i:i + batch_size]
+#             for company, website in batch_urls:
+#                 try:
+#                     normalized_url = normalize_url(website)
+#                     logger.info(f"Processing URL {i + 1}/{len(queue)}: {normalized_url}")
+#                     font_details_list = await fetch_fonts_from_url(normalized_url)
+#                     result = {
+#                         "company": company,
+#                         "website_url": normalized_url,
+#                         "total_fonts": len(font_details_list) if font_details_list else 0,
+#                         "font_details_list": font_details_list,
+#                         "error": None
+#                     }
+#                     bulk_results.append(result)
+#                 except ValueError as e:
+#                     logger.error(f"Invalid URL {website}: {str(e)}")
+#                     bulk_results.append({
+#                         "company": company,
+#                         "website_url": website,
+#                         "total_fonts": 0,
+#                         "font_details_list": [],
+#                         "error": f"Invalid URL: {str(e)}"
+#                     })
+#                 except Exception as e:
+#                     logger.error(f"Error fetching fonts from {website}: {str(e)}")
+#                     bulk_results.append({
+#                         "company": company,
+#                         "website_url": website,
+#                         "total_fonts": 0,
+#                         "font_details_list": [],
+#                         "error": f"Error: {str(e)}"
+#                     })
+#                 # Save progress after each URL
+#                 save_font_data("bulk_fetched", bulk_results)
+#                 logger.info(f"Saved progress after processing {website}")
+#                 await asyncio.sleep(1)  # Brief pause to release resources
+#
+#         logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
+#         return templates.TemplateResponse("main.html", {"request": request, "bulk_results": bulk_results})
+#
+#     except Exception as e:
+#         logger.error(f"Error processing file: {str(e)}")
+#         return templates.TemplateResponse("main.html", {
+#             "request": request,
+#             "error": f"Error processing file: {str(e)}",
+#             "bulk_results": existing_data.get("bulk_fetched", []) if os.path.exists("font_data.json") else []
+#         })
 @app.post("/upload-file", response_class=HTMLResponse)
 async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(20), current_user: str = Depends(get_current_user)):
     if not current_user:
@@ -435,25 +531,16 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
             return templates.TemplateResponse("main.html", {"request": request, "error": "Please upload a CSV or XLSX file."})
 
         content = await file.read()
-        temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
-        with open(temp_file_path, "wb") as f:
-            f.write(content)
-
-        try:
-            if file.filename.endswith('.csv'):
-                df = pd.read_csv(temp_file_path)
-            else:
-                df = pd.read_excel(temp_file_path, engine='openpyxl')
-        finally:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(BytesIO(content))
+        else:
+            df = pd.read_excel(BytesIO(content), engine='openpyxl')
 
         expected_columns = ["Company", "Website"]
         if not all(col in df.columns for col in expected_columns):
             logger.warning("Missing required columns in uploaded file")
             return templates.TemplateResponse("main.html", {"request": request, "error": "File must contain 'Company' and 'Website' columns."})
 
-        # Load existing data to avoid reprocessing
         existing_data = {}
         processed_urls = set()
         if os.path.exists("font_data.json"):
@@ -463,51 +550,43 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                     processed_urls.add(result.get("website_url"))
 
         bulk_results = existing_data.get("bulk_fetched", [])
-        queue = []
-        for _, row in df.iterrows():
-            website = row["Website"].strip()
-            if website not in processed_urls:
-                queue.append((row["Company"].strip(), website))
+        queue = [
+            (row["Company"].strip(), row["Website"].strip())
+            for _, row in df.iterrows()
+            if row["Website"].strip() not in processed_urls
+        ]
 
         logger.info(f"Total URLs to process: {len(queue)}")
 
-        for i in range(0, len(queue), batch_size):
-            batch_urls = queue[i:i + batch_size]
-            for company, website in batch_urls:
+        semaphore = asyncio.Semaphore(3)
+
+        async def process_url(company, website):
+            async with semaphore:
                 try:
                     normalized_url = normalize_url(website)
-                    logger.info(f"Processing URL {i + 1}/{len(queue)}: {normalized_url}")
                     font_details_list = await fetch_fonts_from_url(normalized_url)
-                    result = {
+                    return {
                         "company": company,
                         "website_url": normalized_url,
-                        "total_fonts": len(font_details_list) if font_details_list else 0,
+                        "total_fonts": len(font_details_list),
                         "font_details_list": font_details_list,
                         "error": None
                     }
-                    bulk_results.append(result)
-                except ValueError as e:
-                    logger.error(f"Invalid URL {website}: {str(e)}")
-                    bulk_results.append({
-                        "company": company,
-                        "website_url": website,
-                        "total_fonts": 0,
-                        "font_details_list": [],
-                        "error": f"Invalid URL: {str(e)}"
-                    })
                 except Exception as e:
-                    logger.error(f"Error fetching fonts from {website}: {str(e)}")
-                    bulk_results.append({
+                    logger.error(f"Error processing {website}: {str(e)}")
+                    return {
                         "company": company,
                         "website_url": website,
                         "total_fonts": 0,
                         "font_details_list": [],
-                        "error": f"Error: {str(e)}"
-                    })
-                # Save progress after each URL
-                save_font_data("bulk_fetched", bulk_results)
-                logger.info(f"Saved progress after processing {website}")
-                await asyncio.sleep(1)  # Brief pause to release resources
+                        "error": str(e)
+                    }
+
+        tasks = [process_url(company, website) for company, website in queue]
+        results = await asyncio.gather(*tasks)
+        for result in results:
+            bulk_results.append(result)
+            save_font_data("bulk_fetched", bulk_results)
 
         logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
         return templates.TemplateResponse("main.html", {"request": request, "bulk_results": bulk_results})
@@ -519,6 +598,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
             "error": f"Error processing file: {str(e)}",
             "bulk_results": existing_data.get("bulk_fetched", []) if os.path.exists("font_data.json") else []
         })
+
 
 @app.get("/download-font-data", response_class=StreamingResponse)
 async def download_font_data(request: Request, current_user: str = Depends(get_current_user)):
