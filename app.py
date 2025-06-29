@@ -137,7 +137,7 @@ def extract_font_details(font: TTFont):
         "weight": weight
     }
 
-async def fetch_fonts_from_url(url: str, max_retries: int = 2):
+async def fetch_fonts_from_url(url: str, max_retries: int = 1):
     font_details_list = []
     retry_count = 0
     fonts = []
@@ -149,9 +149,9 @@ async def fetch_fonts_from_url(url: str, max_retries: int = 2):
         try:
             browser = await p.chromium.launch(
                 headless=True,
-                args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
+                args=['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--http1_1'],
                 chromium_sandbox=False,
-                timeout=90000
+                timeout=120000
             )
             context = await browser.new_context()
             while retry_count < max_retries:
@@ -175,8 +175,18 @@ async def fetch_fonts_from_url(url: str, max_retries: int = 2):
                     page.on("response", lambda response: logger.info(f"Response: {response.url} - {response.status}"))
 
                     try:
-                        await page.goto(url, wait_until="load", timeout=60000)
-                        logger.info(f"Page loaded: {url}")
+                        await page.goto(url, wait_until="networkidle", timeout=45000)
+                        logger.info(f"Initial fonts captured for {url}: {len(fonts)}")
+                        # Fallback check for fonts if none captured
+                        if not fonts:
+                            logger.info(f"No fonts captured initially for {url}. Checking font loading status...")
+                            try:
+                                font_status = await page.evaluate("document.fonts.status")
+                                logger.info(f"Font loading status for {url}: {font_status}")
+                                if font_status == "loaded":
+                                    logger.info(f"Fonts loaded but not captured for {url}. Possible CORS or inline fonts.")
+                            except Exception as e:
+                                logger.warning(f"Error checking font status for {url}: {str(e)}")
                         break
                     except PlaywrightTimeoutError:
                         logger.warning(f"Timeout navigating to {url}. Proceeding with captured fonts.")
@@ -185,6 +195,35 @@ async def fetch_fonts_from_url(url: str, max_retries: int = 2):
                         logger.error(f"Error navigating to {url}: {str(e)}. Retrying ({retry_count + 1}/{max_retries})...")
                         retry_count += 1
                         await asyncio.sleep(1)
+                        if retry_count == max_retries:
+                            # Try one last time with a new context and stricter settings
+                            try:
+                                await context.close()
+                                context = await browser.new_context(
+                                    extra_http_headers={
+                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                                        "Accept-Language": "en-US,en;q=0.5"
+                                    }
+                                )
+                                page = await context.new_page()
+                                await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media"] else route.continue_())
+                                page.on("request", capture_fonts)
+                                await page.goto(url, wait_until="networkidle", timeout=45000)
+                                logger.info(f"Retry with HTTP/1.1 and new context succeeded for {url}")
+                                if not fonts:
+                                    logger.info(f"No fonts captured in retry for {url}. Checking font loading status...")
+                                    try:
+                                        font_status = await page.evaluate("document.fonts.status")
+                                        logger.info(f"Font loading status for {url}: {font_status}")
+                                        if font_status == "loaded":
+                                            logger.info(f"Fonts loaded but not captured for {url}. Possible CORS or inline fonts.")
+                                    except Exception as e:
+                                        logger.warning(f"Error checking font status for {url}: {str(e)}")
+                                break
+                            except Exception as e:
+                                logger.warning(f"Final retry failed for {url}: {str(e)}. Proceeding with captured fonts.")
+                                break
                 except Exception as e:
                     logger.error(f"Error creating page for {url}: {str(e)}")
                     retry_count += 1
@@ -214,42 +253,50 @@ async def fetch_fonts_from_url(url: str, max_retries: int = 2):
         logger.warning(f"No fonts found for {url}.")
         return font_details_list
 
-    async with aiohttp.ClientSession() as session:
-        for font_url in fonts:
-            try:
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-                    "Referer": url
-                }
-                logger.info(f"Downloading font from: {font_url}")
-                async with session.get(font_url, timeout=60, headers=headers) as response:
-                    if response.status == 200:
-                        content = await response.read()
-                        temp_file_path = f"temp_font_{secrets.token_hex(4)}"
-                        if font_url.endswith('.woff'):
-                            temp_file_path += '.woff'
-                        elif font_url.endswith('.woff2'):
-                            temp_file_path += '.woff2'
-                        else:
-                            temp_file_path += '.ttf'
-                        with open(temp_file_path, "wb") as f:
-                            f.write(content)
-                        try:
-                            font = TTFont(temp_file_path)
-                            font_details = extract_font_details(font)
-                            font_details["url"] = font_url
-                            font_details_list.append(font_details)
-                            logger.info(f"Successfully processed font: {font_url}")
-                        except Exception as e:
-                            logger.error(f"Error processing font from {font_url}: {str(e)}")
-                        finally:
-                            if os.path.exists(temp_file_path):
-                                os.remove(temp_file_path)
+    # Process font downloads in parallel
+    async def download_font(font_url, session):
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                "Referer": url
+            }
+            logger.info(f"Downloading font from: {font_url}")
+            async with session.get(font_url, timeout=45, headers=headers) as response:
+                if response.status == 200:
+                    content = await response.read()
+                    temp_file_path = f"temp_font_{secrets.token_hex(4)}"
+                    if font_url.endswith('.woff'):
+                        temp_file_path += '.woff'
+                    elif font_url.endswith('.woff2'):
+                        temp_file_path += '.woff2'
                     else:
-                        logger.warning(f"Failed to download font from {font_url}: HTTP {response.status}.")
-            except Exception as e:
-                logger.error(f"Error downloading font from {font_url}: {str(e)}")
+                        temp_file_path += '.ttf'
+                    with open(temp_file_path, "wb") as f:
+                        f.write(content)
+                    try:
+                        font = TTFont(temp_file_path)
+                        font_details = extract_font_details(font)
+                        font_details["url"] = font_url
+                        return font_details
+                    except Exception as e:
+                        logger.error(f"Error processing font from {font_url}: {str(e)}")
+                        return None
+                    finally:
+                        if os.path.exists(temp_file_path):
+                            os.remove(temp_file_path)
+                else:
+                    logger.warning(f"Failed to download font from {font_url}: HTTP {response.status}.")
+                    return None
+        except Exception as e:
+            logger.error(f"Error downloading font from {font_url}: {str(e)}")
+            return None
 
+    async with aiohttp.ClientSession() as session:
+        tasks = [download_font(font_url, session) for font_url in fonts]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        font_details_list = [result for result in results if result is not None]
+
+    logger.info(f"Processed {len(font_details_list)} fonts for {url}")
     return font_details_list
 
 @app.get("/", response_class=HTMLResponse)
