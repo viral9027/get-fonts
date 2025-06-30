@@ -43,32 +43,8 @@ users_db = {
     }
 }
 
-# File-based session store
-SESSION_FILE = "/home/root277/Project/get-fonts/sessions.json"
-
-
-def load_sessions():
-    try:
-        if os.path.exists(SESSION_FILE):
-            with open(SESSION_FILE, "r") as f:
-                return json.load(f)
-        return {}
-    except Exception as e:
-        logger.error(f"Error loading sessions: {str(e)}")
-        return {}
-
-
-def save_sessions(sessions):
-    try:
-        with open(SESSION_FILE, "w") as f:
-            json.dump(sessions, f, indent=4)
-    except Exception as e:
-        logger.error(f"Error saving sessions: {str(e)}")
-
-
-class LoginData(BaseModel):
-    email: str
-    password: str
+# In-memory session store
+sessions = {}
 
 
 def get_current_user(request: Request):
@@ -77,15 +53,11 @@ def get_current_user(request: Request):
     if not session_id:
         logger.warning("No session_id cookie found")
         return None
-    sessions = load_sessions()
-    if session_id not in sessions:
-        logger.warning(f"Session_id {session_id} not found in sessions")
-        return None
     session_data = sessions.get(session_id)
-    if time.time() - session_data["created_at"] > 86400:  # 24 hours
-        logger.info(f"Session expired for session_id: {session_id}")
-        del sessions[session_id]
-        save_sessions(sessions)
+    if not session_data or time.time() - session_data["created_at"] > 86400:  # 24 hours
+        logger.info(f"Session expired or not found for session_id: {session_id}")
+        if session_id in sessions:
+            del sessions[session_id]
         return None
     logger.info(f"Session valid for user: {session_data['email']}")
     return session_data["email"]
@@ -115,10 +87,13 @@ def extract_company_from_url(url: str) -> str:
 
 
 def save_font_data(data_type: str, data: dict):
+    font_data_file = os.getenv("FONT_DATA_FILE", "font_data.json")
     try:
+        os.makedirs(os.path.dirname(font_data_file), exist_ok=True)
+        logger.info(f"Ensured directory exists for {font_data_file}")
         existing_data = {"uploaded_fonts": [], "fetched_fonts": [], "bulk_fetched": []}
-        if os.path.exists("font_data.json"):
-            with open("font_data.json", "r") as f:
+        if os.path.exists(font_data_file):
+            with open(font_data_file, "r") as f:
                 existing_data = json.load(f)
 
         if data_type == "uploaded":
@@ -128,7 +103,7 @@ def save_font_data(data_type: str, data: dict):
         elif data_type == "bulk_fetched":
             existing_data["bulk_fetched"].extend(data)
 
-        with open("font_data.json", "w") as f:
+        with open(font_data_file, "w") as f:
             json.dump(existing_data, f, indent=4)
     except Exception as e:
         logger.error(f"Error saving font data: {str(e)}")
@@ -318,12 +293,10 @@ async def login(response: Response, request: Request, email: str = Form(""), pas
         })
 
     session_id = secrets.token_hex(16)
-    sessions = load_sessions()
     sessions[session_id] = {
         "email": email,
         "created_at": time.time()
     }
-    save_sessions(sessions)
     logger.info(f"Session created with session_id: {session_id} for email: {email}")
     response = RedirectResponse(url="/main", status_code=303)
     response.set_cookie(key="session_id", value=session_id, httponly=True, secure=False, samesite="Lax")
@@ -346,11 +319,9 @@ async def get_main(request: Request, current_user: str = Depends(get_current_use
 @app.get("/logout", response_class=RedirectResponse)
 async def logout(request: Request, response: Response):
     session_id = request.cookies.get("session_id")
-    sessions = load_sessions()
     if session_id in sessions:
         logger.info(f"Logging out session_id: {session_id}")
         del sessions[session_id]
-        save_sessions(sessions)
     response = RedirectResponse(url="/", status_code=303)
     response.delete_cookie("session_id")
     return response
@@ -541,8 +512,8 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
             else:
                 existing_data = {"bulk_fetched": []}
                 processed_urls = set()
-                if os.path.exists("font_data.json"):
-                    with open("font_data.json", "r") as f:
+                if os.path.exists(os.getenv("FONT_DATA_FILE", "font_data.json")):
+                    with open(os.getenv("FONT_DATA_FILE", "font_data.json"), "r") as f:
                         existing_data = json.load(f)
                         processed_urls = {r["website_url"] for r in existing_data.get("bulk_fetched", [])}
 
@@ -614,7 +585,8 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
         return RedirectResponse(url="/", status_code=303)
 
     try:
-        if not os.path.exists("font_data.json"):
+        font_data_file = os.getenv("FONT_DATA_FILE", "font_data.json")
+        if not os.path.exists(font_data_file):
             logger.warning("No font data available to download")
             return templates.TemplateResponse("main.html", {
                 "request": request,
@@ -622,7 +594,7 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
                 "error_type": "DataNotFoundError"
             })
 
-        with open("font_data.json", "r") as f:
+        with open(font_data_file, "r") as f:
             font_data = json.load(f)
 
         wb = openpyxl.Workbook()
@@ -740,20 +712,15 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
             "error_type": "SessionError"
         })
     try:
-        session_id = request.cookies.get("session_id")
-        sessions = load_sessions()
-        current_session = sessions.get(session_id, None)
-        sessions.clear()
-        if current_session:
-            sessions[session_id] = current_session
-        save_sessions(sessions)
+        font_data_file = os.getenv("FONT_DATA_FILE", "font_data.json")
+        os.makedirs(os.path.dirname(font_data_file), exist_ok=True)
         empty_data = {"uploaded_fonts": [], "fetched_fonts": [], "bulk_fetched": []}
-        with open("font_data.json", "w") as f:
+        with open(font_data_file, "w") as f:
             json.dump(empty_data, f, indent=4)
-        logger.info("Font data and sessions (except current user) cleared successfully")
+        logger.info("Font data cleared successfully")
         return templates.TemplateResponse("main.html", {
             "request": request,
-            "message": "All font data and sessions cleared successfully."
+            "message": "All font data cleared successfully."
         })
     except Exception as e:
         logger.error(f"Error clearing font data: {str(e)}")
@@ -767,4 +734,4 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="localhost", port=8000, workers=1)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, workers=1)
