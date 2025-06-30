@@ -730,31 +730,47 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
 
 @app.post("/clear-font-data", response_class=HTMLResponse)
 async def clear_font_data(request: Request, current_user: str = Depends(get_current_user)):
-    if not current_user:
-        logger.warning("No valid user session, redirecting to login")
-        return templates.TemplateResponse("login.html", {
-            "request": request,
-            "error_message": "Session expired or invalid. Please log in again.",
-            "error_type": "SessionError"
-        })
+
     try:
         font_data_file = os.getenv("FONT_DATA_FILE", "font_data.json")
-        if not font_data_file:
-            font_data_file = "font_data.json"
+
+
+        # Delete the existing file if it exists
+        if os.path.exists(font_data_file):
+            os.remove(font_data_file)
+            logger.info(f"Deleted existing file: {font_data_file}")
+        else:
+            logger.warning(f"File {font_data_file} does not exist, no deletion needed")
         os.makedirs(os.path.dirname(font_data_file), exist_ok=True)
+        # Create a new empty file
         empty_data = {"uploaded_fonts": [], "fetched_fonts": [], "bulk_fetched": []}
         with open(font_data_file, "w") as f:
             json.dump(empty_data, f, indent=4)
-        logger.info("All font data cleared successfully from JSON file")
+            logger.info(f"Created new empty file: {font_data_file}")
+
+        # Verify the new file content
+        with open(font_data_file, "r") as f:
+            verified_data = json.load(f)
+            if verified_data != empty_data:
+                raise Exception("Verification failed: New file does not contain expected empty structure")
+            logger.info(f"Verified new file content: {verified_data}")
+
         return templates.TemplateResponse("main.html", {
             "request": request,
-            "message": "All font data cleared successfully."
+            "message": "All font data cleared and new file created successfully."
+        })
+    except PermissionError as e:
+        logger.error(f"Permission denied when clearing font data: {str(e)}")
+        return templates.TemplateResponse("main.html", {
+            "request": request,
+            "error_message": f"Permission denied. Ensure the application has write access to {font_data_file}.",
+            "error_type": "PermissionError"
         })
     except Exception as e:
         logger.error(f"Error clearing font data: {str(e)}")
         return templates.TemplateResponse("main.html", {
             "request": request,
-            "error_message": "Error clearing font data.",
+            "error_message": f"Error clearing font data: {str(e)}.",
             "error_type": type(e).__name__
         })
 
