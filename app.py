@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 # Increase file descriptor limit
 try:
     soft_limit, hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
-    resource.setrlimit(resource.RLIMIT_NOFILE, (4096, hard_limit))
+    new_limit = min(8192, hard_limit)  # Cap at 8192 or system max
+    resource.setrlimit(resource.RLIMIT_NOFILE, (new_limit, hard_limit))
     logger.info(f"Updated file descriptor limit: {resource.getrlimit(resource.RLIMIT_NOFILE)}")
 except Exception as e:
     logger.warning(f"Failed to increase file descriptor limit: {str(e)}")
@@ -88,6 +89,8 @@ def extract_company_from_url(url: str) -> str:
 
 def save_font_data(data_type: str, data: dict):
     font_data_file = os.getenv("FONT_DATA_FILE", "font_data.json")
+    if not font_data_file:
+        font_data_file = "font_data.json"  # Fallback if env var is empty
     try:
         os.makedirs(os.path.dirname(font_data_file), exist_ok=True)
         logger.info(f"Ensured directory exists for {font_data_file}")
@@ -512,8 +515,11 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
             else:
                 existing_data = {"bulk_fetched": []}
                 processed_urls = set()
-                if os.path.exists(os.getenv("FONT_DATA_FILE", "font_data.json")):
-                    with open(os.getenv("FONT_DATA_FILE", "font_data.json"), "r") as f:
+                font_data_file = os.getenv("FONT_DATA_FILE", "font_data.json")
+                if not font_data_file:
+                    font_data_file = "font_data.json"
+                if os.path.exists(font_data_file):
+                    with open(font_data_file, "r") as f:
                         existing_data = json.load(f)
                         processed_urls = {r["website_url"] for r in existing_data.get("bulk_fetched", [])}
 
@@ -539,7 +545,14 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                                 "error_type": "ValueError"
                             })
 
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    # Limit concurrent tasks to 5 to avoid resource exhaustion
+                    semaphore = asyncio.Semaphore(5)
+
+                    async def bounded_fetch(task):
+                        async with semaphore:
+                            return await task
+
+                    results = await asyncio.gather(*(bounded_fetch(task) for task in tasks), return_exceptions=True)
 
                     for (company, website), result in zip(queue[:batch_size], results):
                         if isinstance(result, Exception):
@@ -586,6 +599,8 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
 
     try:
         font_data_file = os.getenv("FONT_DATA_FILE", "font_data.json")
+        if not font_data_file:
+            font_data_file = "font_data.json"
         if not os.path.exists(font_data_file):
             logger.warning("No font data available to download")
             return templates.TemplateResponse("main.html", {
@@ -713,6 +728,8 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
         })
     try:
         font_data_file = os.getenv("FONT_DATA_FILE", "font_data.json")
+        if not font_data_file:
+            font_data_file = "font_data.json"
         os.makedirs(os.path.dirname(font_data_file), exist_ok=True)
         empty_data = {"uploaded_fonts": [], "fetched_fonts": [], "bulk_fetched": []}
         with open(font_data_file, "w") as f:
