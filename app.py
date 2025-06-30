@@ -531,12 +531,12 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                 logger.info(f"Total URLs to process: {len(queue)}")
 
                 # Get maximum batch size from environment variable or default to 100
-                max_batch_size = int(os.getenv("MAX_BATCH_SIZE", 100))
+                max_batch_size = int(os.getenv("MAX_BATCH_SIZE", 500))
                 if batch_size > max_batch_size:
                     batch_size = max_batch_size
                     logger.warning(f"Batch size reduced to maximum allowed: {max_batch_size}")
 
-                async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
+                async with aiohttp.ClientSession(timeout=ClientTimeout(total=25)) as session:
                     tasks = []
                     for company, website in queue:
                         try:
