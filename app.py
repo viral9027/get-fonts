@@ -467,7 +467,7 @@ async def get_upload_file_redirect():
 
 @app.post("/upload-file", response_class=HTMLResponse)
 async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(20),
-                      current_user: str = Depends(get_current_user)):
+                      ignore_processed: bool = Form(False), current_user: str = Depends(get_current_user)):
     if not current_user:
         logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
@@ -521,10 +521,11 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                 if os.path.exists(font_data_file):
                     with open(font_data_file, "r") as f:
                         existing_data = json.load(f)
-                        processed_urls = {r["website_url"] for r in existing_data.get("bulk_fetched", [])}
+                        processed_urls = {r["website_url"] for r in
+                                          existing_data.get("bulk_fetched", [])} if not ignore_processed else set()
 
                 queue = [(row[company_col].strip(), row[website_col].strip()) for _, row in df.iterrows() if
-                         row[website_col].strip() not in processed_urls]
+                         not ignore_processed or row[website_col].strip() not in processed_urls]
                 bulk_results = existing_data.get("bulk_fetched", [])
 
                 logger.info(f"Total URLs to process: {len(queue)}")
