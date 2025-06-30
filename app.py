@@ -44,7 +44,7 @@ users_db = {
 }
 
 # File-based session store
-SESSION_FILE = "sessions.json"
+SESSION_FILE = "/home/root277/Project/get-fonts/sessions.json"
 
 
 def load_sessions():
@@ -313,7 +313,8 @@ async def login(response: Response, request: Request, email: str = Form(""), pas
         logger.warning(f"Login failed for email: {email}")
         return templates.TemplateResponse("login.html", {
             "request": request,
-            "error": "Invalid credentials"
+            "error_message": "Invalid credentials",
+            "error_type": "AuthenticationError"
         })
 
     session_id = secrets.token_hex(16)
@@ -335,7 +336,8 @@ async def get_main(request: Request, current_user: str = Depends(get_current_use
         logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
             "request": request,
-            "error": "Session expired or invalid. Please log in again."
+            "error_message": "Session expired or invalid. Please log in again.",
+            "error_type": "SessionError"
         })
     logger.info(f"Rendering main page for user: {current_user}")
     return templates.TemplateResponse("main.html", {"request": request})
@@ -365,55 +367,66 @@ async def upload_font(request: Request, file: UploadFile = File(...), current_us
         logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
             "request": request,
-            "error": "Session expired or invalid. Please log in again."
+            "error_message": "Session expired or invalid. Please log in again.",
+            "error_type": "SessionError"
         })
+    logger.info(f"Received font upload request for file: {file.filename}")
+    font_details = {}
+    error_type = None
+    error_message = None
     try:
-        logger.info(f"Uploading font file: {file.filename} by user: {current_user}")
+        logger.info(f"Reading file content: {file.filename}")
         if not file.filename.lower().endswith(('.ttf', '.otf', '.woff', '.woff2', '.eot', '.ttc')):
-            logger.warning(f"Unsupported font format: {file.filename}")
-            return templates.TemplateResponse("main.html", {
-                "request": request,
-                "error": "Unsupported font format. Please upload a .ttf, .otf, .woff, .woff2, .eot, or .ttc file."
-            })
+            error_type = "FileFormatError"
+            error_message = "Unsupported font format. Please upload a .ttf, .otf, .woff, .woff2, .eot, or .ttc file."
+            logger.warning(error_message)
+        else:
+            content = await file.read()
+            temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
+            logger.info(f"Saving temporary file: {temp_file_path}")
+            with open(temp_file_path, "wb") as f:
+                f.write(content)
 
-        content = await file.read()
-        temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
-        with open(temp_file_path, "wb") as f:
-            f.write(content)
+            font = None
+            try:
+                logger.info(f"Processing font file: {temp_file_path}")
+                if temp_file_path.lower().endswith(('.woff', '.woff2')):
+                    import woff2
+                    ttf_path = temp_file_path.rsplit('.', 1)[0] + '.ttf'
+                    woff2.decompress(temp_file_path, ttf_path)
+                    font = TTFont(ttf_path)
+                    os.remove(ttf_path)
+                else:
+                    font = TTFont(temp_file_path)
 
-        font = None
-        try:
-            if temp_file_path.lower().endswith(('.woff', '.woff2')):
-                import woff2
-                ttf_path = temp_file_path.rsplit('.', 1)[0] + '.ttf'
-                woff2.decompress(temp_file_path, ttf_path)
-                font = TTFont(ttf_path)
-                os.remove(ttf_path)
-            else:
-                font = TTFont(temp_file_path)
+                font_details = extract_font_details(font)
+            except Exception as e:
+                error_type = type(e).__name__
+                error_message = f"Failed to process font file."
+                logger.error(f"Error processing font {file.filename}: {str(e)}")
+            finally:
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+                    logger.info(f"Removed temporary file: {temp_file_path}")
 
-            font_details = extract_font_details(font)
-        finally:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-
-        save_font_data("uploaded", {
-            "filename": file.filename,
-            "font_details": font_details
-        })
-
-        logger.info(f"Successfully uploaded font: {file.filename}")
-        return templates.TemplateResponse("main.html", {
-            "request": request,
-            "font_details": font_details,
-            "filename": file.filename
-        })
+            if font_details:
+                save_font_data("uploaded", {
+                    "filename": file.filename,
+                    "font_details": font_details
+                })
+                logger.info(f"Successfully uploaded font: {file.filename}")
     except Exception as e:
-        logger.error(f"Error processing font: {str(e)}")
-        return templates.TemplateResponse("main.html", {
-            "request": request,
-            "error": f"Error processing font: {str(e)}"
-        })
+        error_type = type(e).__name__
+        error_message = "An unexpected error occurred while uploading the font."
+        logger.error(f"Unexpected error processing font {file.filename}: {str(e)}")
+
+    return templates.TemplateResponse("main.html", {
+        "request": request,
+        "font_details": font_details if font_details else {},
+        "filename": file.filename,
+        "error_type": error_type,
+        "error_message": error_message
+    })
 
 
 @app.get("/fetch-fonts", response_class=RedirectResponse)
@@ -427,51 +440,50 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
         logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
             "request": request,
-            "error": "Session expired or invalid. Please log in again."
+            "error_message": "Session expired or invalid. Please log in again.",
+            "error_type": "SessionError"
         })
 
+    logger.info(f"Fetching fonts from {url} by user: {current_user}")
+    font_details_list = []
+    company = ""
+    error_type = None
+    error_message = None
     try:
-        logger.info(f"Fetching fonts from {url} by user: {current_user}")
         normalized_url = normalize_url(url)
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
-            font_details_list, error_msg = await fetch_fonts_from_url(normalized_url, session)
+            font_details_list, error_message = await fetch_fonts_from_url(normalized_url, session)
 
         company = extract_company_from_url(normalized_url)
-        result = {
-            "website_url": normalized_url,
-            "company": company,
-            "total_fonts": len(font_details_list),
-            "font_details_list": font_details_list
-        }
-        save_font_data("fetched", result)
-
-        if not font_details_list:
-            logger.warning(f"No fonts found on {normalized_url}")
-            return templates.TemplateResponse("main.html", {
-                "request": request,
-                "error": error_msg or f"No fonts found on {normalized_url}. The website may use system fonts, embedded fonts, or have CORS restrictions."
-            })
-
-        logger.info(f"Successfully fetched {len(font_details_list)} fonts from {normalized_url}")
-        return templates.TemplateResponse("main.html", {
-            "request": request,
-            "font_details_list": font_details_list,
-            "website_url": normalized_url,
-            "company": company,
-            "total_fonts": len(font_details_list)
-        })
+        if font_details_list:
+            result = {
+                "website_url": normalized_url,
+                "company": company,
+                "total_fonts": len(font_details_list),
+                "font_details_list": font_details_list
+            }
+            save_font_data("fetched", result)
+            logger.info(f"Successfully fetched {len(font_details_list)} fonts from {normalized_url}")
+        else:
+            logger.warning(f"No fonts found on {normalized_url}: {error_message}")
     except ValueError as e:
+        error_type = "ValueError"
+        error_message = "Invalid URL format."
         logger.error(f"Invalid URL: {str(e)}")
-        return templates.TemplateResponse("main.html", {
-            "request": request,
-            "error": f"Invalid URL: {str(e)}"
-        })
     except Exception as e:
+        error_type = type(e).__name__
+        error_message = "An unexpected error occurred while fetching fonts."
         logger.error(f"Error fetching fonts from {url}: {str(e)}")
-        return templates.TemplateResponse("main.html", {
-            "request": request,
-            "error": f"Error fetching fonts: {str(e)}"
-        })
+
+    return templates.TemplateResponse("main.html", {
+        "request": request,
+        "font_details_list": font_details_list if font_details_list else [],
+        "website_url": normalized_url,
+        "company": company,
+        "total_fonts": len(font_details_list) if font_details_list else 0,
+        "error_type": error_type,
+        "error_message": error_message
+    })
 
 
 @app.get("/upload-file", response_class=RedirectResponse)
@@ -486,108 +498,113 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
         logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
             "request": request,
-            "error": "Session expired or invalid. Please log in again."
+            "error_message": "Session expired or invalid. Please log in again.",
+            "error_type": "SessionError"
         })
-
+    logger.info(f"Received bulk file upload request for file: {file.filename}")
+    bulk_results = []
+    error_type = None
+    error_message = None
     try:
-        logger.info(f"Uploading bulk file: {file.filename} by user: {current_user}")
+        logger.info(f"Reading file content: {file.filename}")
         if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx')):
-            logger.warning(f"Invalid file format: {file.filename}")
-            return templates.TemplateResponse("main.html", {
-                "request": request,
-                "error": "Please upload a CSV or XLSX file."
-            })
+            error_type = "FileFormatError"
+            error_message = "Please upload a CSV or XLSX file."
+            logger.warning(error_message)
+        else:
+            content = await file.read()
+            temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
+            logger.info(f"Saving temporary file: {temp_file_path}")
+            with open(temp_file_path, "wb") as f:
+                f.write(content)
 
-        content = await file.read()
-        temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
-        with open(temp_file_path, "wb") as f:
-            f.write(content)
+            try:
+                logger.info(f"Processing file: {temp_file_path}")
+                df = pd.read_csv(temp_file_path) if file.filename.endswith('.csv') else pd.read_excel(temp_file_path,
+                                                                                                      engine='openpyxl')
+            finally:
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+                    logger.info(f"Removed temporary file: {temp_file_path}")
 
-        try:
-            df = pd.read_csv(temp_file_path) if file.filename.endswith('.csv') else pd.read_excel(temp_file_path,
-                                                                                                  engine='openpyxl')
-        finally:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
+            possible_columns = {
+                "company": ["company", "Company", "COMPANY", "name", "Name"],
+                "website": ["website", "Website", "WEBSITE", "url", "URL", "site", "Site"]
+            }
+            company_col = next((col for col in df.columns if col in possible_columns["company"]), None)
+            website_col = next((col for col in df.columns if col in possible_columns["website"]), None)
 
-        possible_columns = {
-            "company": ["company", "Company", "COMPANY", "name", "Name"],
-            "website": ["website", "Website", "WEBSITE", "url", "URL", "site", "Site"]
-        }
-        company_col = next((col for col in df.columns if col in possible_columns["company"]), None)
-        website_col = next((col for col in df.columns if col in possible_columns["website"]), None)
+            if not company_col or not website_col:
+                error_type = "DataError"
+                error_message = "File must contain columns for company and website (e.g., 'Company', 'Website', 'URL')."
+                logger.warning(error_message)
+            else:
+                existing_data = {"bulk_fetched": []}
+                processed_urls = set()
+                if os.path.exists("font_data.json"):
+                    with open("font_data.json", "r") as f:
+                        existing_data = json.load(f)
+                        processed_urls = {r["website_url"] for r in existing_data.get("bulk_fetched", [])}
 
-        if not company_col or not website_col:
-            logger.warning("Missing required columns in uploaded file")
-            return templates.TemplateResponse("main.html", {
-                "request": request,
-                "error": "File must contain columns for company and website (e.g., 'Company', 'Website', 'URL')."
-            })
+                queue = [(row[company_col].strip(), row[website_col].strip()) for _, row in df.iterrows() if
+                         row[website_col].strip() not in processed_urls]
+                bulk_results = existing_data.get("bulk_fetched", [])
 
-        existing_data = {"bulk_fetched": []}
-        processed_urls = set()
-        if os.path.exists("font_data.json"):
-            with open("font_data.json", "r") as f:
-                existing_data = json.load(f)
-                processed_urls = {r["website_url"] for r in existing_data.get("bulk_fetched", [])}
+                logger.info(f"Total URLs to process: {len(queue)}")
 
-        queue = [(row[company_col].strip(), row[website_col].strip()) for _, row in df.iterrows() if
-                 row[website_col].strip() not in processed_urls]
-        bulk_results = existing_data.get("bulk_fetched", [])
+                async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
+                    tasks = []
+                    for company, website in queue[:batch_size]:
+                        try:
+                            normalized_url = normalize_url(website)
+                            tasks.append(fetch_fonts_from_url(normalized_url, session))
+                        except ValueError as e:
+                            bulk_results.append({
+                                "company": company,
+                                "website_url": website,
+                                "total_fonts": 0,
+                                "font_details_list": [],
+                                "error_message": "Invalid URL format.",
+                                "error_type": "ValueError"
+                            })
 
-        logger.info(f"Total URLs to process: {len(queue)}")
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
-            tasks = []
-            for company, website in queue[:batch_size]:
-                try:
-                    normalized_url = normalize_url(website)
-                    tasks.append(fetch_fonts_from_url(normalized_url, session))
-                except ValueError as e:
-                    bulk_results.append({
-                        "company": company,
-                        "website_url": website,
-                        "total_fonts": 0,
-                        "font_details_list": [],
-                        "error": f"Invalid URL: {str(e)}"
-                    })
+                    for (company, website), result in zip(queue[:batch_size], results):
+                        if isinstance(result, Exception):
+                            bulk_results.append({
+                                "company": company,
+                                "website_url": website,
+                                "total_fonts": 0,
+                                "font_details_list": [],
+                                "error_message": "An unexpected error occurred while fetching fonts.",
+                                "error_type": type(result).__name__
+                            })
+                        else:
+                            font_details_list, error_msg = result
+                            bulk_results.append({
+                                "company": company,
+                                "website_url": normalize_url(website),
+                                "total_fonts": len(font_details_list),
+                                "font_details_list": font_details_list,
+                                "error_message": error_msg,
+                                "error_type": None if font_details_list else "NoFontsError"
+                            })
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for (company, website), result in zip(queue[:batch_size], results):
-                if isinstance(result, Exception):
-                    bulk_results.append({
-                        "company": company,
-                        "website_url": website,
-                        "total_fonts": 0,
-                        "font_details_list": [],
-                        "error": f"Error: {str(result)}"
-                    })
-                else:
-                    font_details_list, error_msg = result
-                    bulk_results.append({
-                        "company": company,
-                        "website_url": normalize_url(website),
-                        "total_fonts": len(font_details_list),
-                        "font_details_list": font_details_list,
-                        "error": error_msg
-                    })
-
-        save_font_data("bulk_fetched", bulk_results)
-        logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
-
-        return templates.TemplateResponse("main.html", {
-            "request": request,
-            "bulk_results": bulk_results,
-            "message": f"Processed {len(queue)} URLs"
-        })
+                save_font_data("bulk_fetched", bulk_results)
+                logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
     except Exception as e:
-        logger.error(f"Error processing file: {str(e)}")
-        return templates.TemplateResponse("main.html", {
-            "request": request,
-            "error": f"Error processing file: {str(e)}",
-            "bulk_results": existing_data.get("bulk_fetched", [])
-        })
+        error_type = type(e).__name__
+        error_message = "An unexpected error occurred while processing the file."
+        logger.error(f"Unexpected error processing file {file.filename}: {str(e)}")
+
+    return templates.TemplateResponse("main.html", {
+        "request": request,
+        "bulk_results": bulk_results if bulk_results else [],
+        "message": f"Processed {len(bulk_results)} URLs" if bulk_results else "No data processed",
+        "error_type": error_type,
+        "error_message": error_message
+    })
 
 
 @app.get("/download-font-data", response_class=StreamingResponse)
@@ -601,7 +618,8 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
             logger.warning("No font data available to download")
             return templates.TemplateResponse("main.html", {
                 "request": request,
-                "error": "No font data available to download."
+                "error_message": "No font data available to download.",
+                "error_type": "DataNotFoundError"
             })
 
         with open("font_data.json", "r") as f:
@@ -659,7 +677,7 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
         ws_bulk = wb.create_sheet("Bulk Fetched Fonts")
         ws_bulk.append(headers)
         for result in font_data.get("bulk_fetched", []):
-            if result.get("error"):
+            if result.get("error_message"):
                 ws_bulk.append([
                     result.get("company", "Unknown"),
                     result.get("website_url", "Unknown"),
@@ -672,8 +690,8 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
                     "N/A",
                     "N/A",
                     "N/A",
-                    result.get("license_type", "Unknown"),
-                    result.get("error", "-")
+                    "N/A",
+                    result.get("error_message", "-")
                 ])
             else:
                 for font in result.get("font_details_list", []):
@@ -707,7 +725,8 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
         logger.error(f"Error generating Excel file: {str(e)}")
         return templates.TemplateResponse("main.html", {
             "request": request,
-            "error": f"Error generating Excel file: {str(e)}"
+            "error_message": "Error generating Excel file.",
+            "error_type": type(e).__name__
         })
 
 
@@ -717,7 +736,8 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
         logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
             "request": request,
-            "error": "Session expired or invalid. Please log in again."
+            "error_message": "Session expired or invalid. Please log in again.",
+            "error_type": "SessionError"
         })
     try:
         session_id = request.cookies.get("session_id")
@@ -739,9 +759,12 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
         logger.error(f"Error clearing font data: {str(e)}")
         return templates.TemplateResponse("main.html", {
             "request": request,
-            "error": f"Error clearing font data: {str(e)}"
+            "error_message": "Error clearing font data.",
+            "error_type": type(e).__name__
         })
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="localhost", port=8000, workers=1)  # Single worker for debugging
+
+    uvicorn.run("app:app", host="localhost", port=8000, workers=1)
