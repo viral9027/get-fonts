@@ -513,7 +513,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                 error_message = "File must contain columns for company and website (e.g., 'Company', 'Website', 'URL')."
                 logger.warning(error_message)
             else:
-                existing_data = {"bulk_fetched": []}
+                existing_data = {"uploaded_fonts": [], "fetched_fonts": [], "bulk_fetched": []}
                 processed_urls = set()
                 font_data_file = os.getenv("FONT_DATA_FILE", "font_data.json")
                 if not font_data_file:
@@ -530,13 +530,14 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
 
                 logger.info(f"Total URLs to process: {len(queue)}")
 
-                # Get maximum batch size from environment variable or default to 100
-                max_batch_size = int(os.getenv("MAX_BATCH_SIZE", 500))
+                # Get maximum batch size from environment variable or default to 300
+                max_batch_size = int(os.getenv("MAX_BATCH_SIZE", 300))
                 if batch_size > max_batch_size:
                     batch_size = max_batch_size
                     logger.warning(f"Batch size reduced to maximum allowed: {max_batch_size}")
 
-                async with aiohttp.ClientSession(timeout=ClientTimeout(total=25)) as session:
+                async with aiohttp.ClientSession(
+                        timeout=ClientTimeout(total=20)) as session:  # Increased timeout to 20s
                     tasks = []
                     for company, website in queue:
                         try:
@@ -582,8 +583,11 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                                 "error_type": None if font_details_list else "NoFontsError"
                             })
 
+                # Append new results to existing bulk_fetched data
+                existing_bulk = existing_data.get("bulk_fetched", [])
+                bulk_results = existing_bulk + bulk_results
                 save_font_data("bulk_fetched", bulk_results)
-                logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
+                logger.info(f"Bulk fetch completed with {len(bulk_results)} total results")
     except Exception as e:
         error_type = type(e).__name__
         error_message = "An unexpected error occurred while processing the file."
@@ -741,7 +745,7 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
         empty_data = {"uploaded_fonts": [], "fetched_fonts": [], "bulk_fetched": []}
         with open(font_data_file, "w") as f:
             json.dump(empty_data, f, indent=4)
-        logger.info("Font data cleared successfully")
+        logger.info("All font data cleared successfully from JSON file")
         return templates.TemplateResponse("main.html", {
             "request": request,
             "message": "All font data cleared successfully."
