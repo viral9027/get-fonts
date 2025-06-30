@@ -529,9 +529,15 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
 
                 logger.info(f"Total URLs to process: {len(queue)}")
 
+                # Get maximum batch size from environment variable or default to 100
+                max_batch_size = int(os.getenv("MAX_BATCH_SIZE", 100))
+                if batch_size > max_batch_size:
+                    batch_size = max_batch_size
+                    logger.warning(f"Batch size reduced to maximum allowed: {max_batch_size}")
+
                 async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
                     tasks = []
-                    for company, website in queue[:batch_size]:
+                    for company, website in queue:
                         try:
                             normalized_url = normalize_url(website)
                             tasks.append(fetch_fonts_from_url(normalized_url, session))
@@ -554,7 +560,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
 
                     results = await asyncio.gather(*(bounded_fetch(task) for task in tasks), return_exceptions=True)
 
-                    for (company, website), result in zip(queue[:batch_size], results):
+                    for (company, website), result in zip(queue, results):
                         if isinstance(result, Exception):
                             bulk_results.append({
                                 "company": company,
@@ -751,4 +757,4 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, workers=1)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, workers=3)
