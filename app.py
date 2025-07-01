@@ -480,7 +480,7 @@ async def get_upload_file_redirect():
 
 
 @app.post("/upload-file", response_class=HTMLResponse)
-async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(20),
+async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(200),
                       current_user: str = Depends(get_current_user)):
     if not current_user:
         logger.warning("No valid user session, redirecting to login")
