@@ -547,7 +547,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
 
                 # Cap batch size for safety
                 max_batch_size = int(os.getenv("MAX_BATCH_SIZE", 300))
-                batch_size = min(batch_size, max_batch_size, 10)  # Further cap at 10
+                batch_size = min(batch_size, max_batch_size, 300)  # Further cap at 10
                 logger.info(f"Using batch size: {batch_size}")
 
                 async with async_playwright() as p:
