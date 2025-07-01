@@ -85,7 +85,7 @@ def extract_company_from_url(url: str) -> str:
     return ' '.join(word.capitalize() for word in domain.split('.')[0].split('-'))
 
 def save_font_data(data_type: str, data: dict):
-    font_data_file = os.path.join(os.getcwd(), "font_data.json")  # Hardcoded default
+    font_data_file = "/tmp/font_data.json"  # Explicit writable path
     logger.info(f"Using font data file: {font_data_file}")
     try:
         os.makedirs(os.path.dirname(font_data_file) or '.', exist_ok=True)
@@ -142,7 +142,24 @@ async def fetch_fonts_from_url(url: str, session: ClientSession, browser=None):
     css_fonts = []
     rendered_fonts = []
 
-    for attempt in range(2):  # Retry up to 3 times
+    # Define event handlers outside the try block
+    async def capture_fonts(request):
+        if request.resource_type == "font":
+            font_url = request.url.lower()
+            logger.info(f"Captured font request: {font_url}")
+            if any(font_url.endswith(ext) for ext in ['.ttf', '.otf', '.woff', '.woff2', '.eot', '.ttc']):
+                fonts.append(request.url)
+            else:
+                logger.info(f"Skipping unsupported font format: {font_url}")
+
+    async def check_response(response):
+        if response.request.resource_type == "font":
+            logger.info(f"Font response: {response.url} - Status: {response.status}")
+            if response.status in [403, 401]:
+                nonlocal cors_blocked
+                cors_blocked = True
+
+    for attempt in range(3):  # Retry up to 3 times
         try:
             context = None
             page = None
@@ -153,36 +170,21 @@ async def fetch_fonts_from_url(url: str, session: ClientSession, browser=None):
                         context = await browser_instance.new_context(
                             viewport={'width': 1280, 'height': 720},
                             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                            java_script_enabled=True  # Enable JavaScript for dynamic font loading
+                            java_script_enabled=True
                         )
                         page = await context.new_page()
 
                         await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media"] else route.continue_())
-
-                        async def capture_fonts(request):
-                            if request.resource_type == "font":
-                                font_url = request.url.lower()
-                                logger.info(f"Captured font request: {font_url}")
-                                if any(font_url.endswith(ext) for ext in ['.ttf', '.otf', '.woff', '.woff2', '.eot', '.ttc']):
-                                    fonts.append(request.url)
-                                else:
-                                    logger.info(f"Skipping unsupported font format: {font_url}")
-
-                        async def check_response(response):
-                            if response.request.resource_type == "font":
-                                logger.info(f"Font response: {response.url} - Status: {response.status}")
-                                if response.status in [403, 401]:
-                                    nonlocal cors_blocked
-                                    cors_blocked = True
-
                         page.on("request", capture_fonts)
                         page.on("response", check_response)
 
                         try:
-                            await page.goto(url, wait_until="networkidle", timeout=10000)  # Use networkidle
+                            await page.goto(url, wait_until="networkidle", timeout=20000)
                             await page.evaluate("document.fonts.ready")
                             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                            await page.wait_for_timeout(10000)  # Increased to capture lazy-loaded fonts
+                            await page.wait_for_timeout(10000)
+                            await page.evaluate("window.scrollBy(0, 500)")
+                            await page.wait_for_timeout(5000)
                             font_families = await page.evaluate("""
                                 Array.from(document.fonts).map(font => ({
                                     family: font.family,
@@ -233,10 +235,12 @@ async def fetch_fonts_from_url(url: str, session: ClientSession, browser=None):
                 page.on("request", capture_fonts)
                 page.on("response", check_response)
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=10000)
+                    await page.goto(url, wait_until="networkidle", timeout=20000)
                     await page.evaluate("document.fonts.ready")
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     await page.wait_for_timeout(10000)
+                    await page.evaluate("window.scrollBy(0, 500)")
+                    await page.wait_for_timeout(5000)
                     font_families = await page.evaluate("""
                         Array.from(document.fonts).map(font => ({
                             family: font.family,
@@ -573,7 +577,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
             else:
                 existing_data = {"uploaded_fonts": [], "fetched_fonts": [], "bulk_fetched": []}
                 processed_urls = set()
-                font_data_file = os.path.join(os.getcwd(), "font_data.json")  # Hardcoded default
+                font_data_file = "/tmp/font_data.json"
                 logger.info(f"Using font data file: {font_data_file}")
                 if os.path.exists(font_data_file):
                     with open(font_data_file, "r") as f:
@@ -586,19 +590,17 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
 
                 logger.info(f"Total URLs to process: {len(queue)}")
 
-                # Hardcoded concurrency limit
-                max_concurrency = 3  # Conservative default for limited resources
+                max_concurrency = 5
                 semaphore = asyncio.Semaphore(max_concurrency)
                 logger.info(f"Using concurrency limit: {max_concurrency}")
 
-                # Hardcoded batch size
-                batch_size = min(batch_size, 300)  # Cap at 300
+                batch_size = min(batch_size, 300)
                 logger.info(f"Using batch size: {batch_size}")
 
                 async with async_playwright() as p:
                     browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
                     try:
-                        async with aiohttp.ClientSession(timeout=ClientTimeout(total=20)) as session:
+                        async with aiohttp.ClientSession(timeout=ClientTimeout(total=30)) as session:
                             chunk_size = max_concurrency
                             for i in range(0, len(queue), chunk_size):
                                 chunk = queue[i:i + chunk_size]
@@ -670,7 +672,7 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
         return RedirectResponse(url="/", status_code=303)
 
     try:
-        font_data_file = os.path.join(os.getcwd(), "font_data.json")  # Hardcoded default
+        font_data_file = "/tmp/font_data.json"
         logger.info(f"Using font data file: {font_data_file}")
         if not os.path.exists(font_data_file):
             logger.warning("No font data available to download")
@@ -790,7 +792,7 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
 @app.post("/clear-font-data", response_class=HTMLResponse)
 async def clear_font_data(request: Request, current_user: str = Depends(get_current_user)):
     try:
-        font_data_file = os.path.join(os.getcwd(), "font_data.json")  # Hardcoded default
+        font_data_file = "/tmp/font_data.json"
         logger.info(f"Using font data file: {font_data_file}")
 
         # Delete the existing file if it exists
