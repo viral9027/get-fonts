@@ -126,7 +126,7 @@ def save_font_data(data_type: str, data: dict):
         elif data_type == "fetched":
             existing_data["fetched_fonts"].append(data)
         elif data_type == "bulk_fetched":
-            existing_data["bulk_fetched"].extend(data)
+            existing_data["bulk_fetched"] = data  # Overwrite with new data
 
         with open("font_data.json", "w") as f:
             json.dump(existing_data, f, indent=4)
@@ -248,7 +248,7 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
         else:
             error_msg += " (no fonts detected in network requests, CSS, or DOM)"
         logger.warning(f"{error_msg} for {url}")
-        return font_details_list, error_msg
+        return [], error_msg
 
     for font_url in fonts:
         try:
@@ -283,7 +283,7 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
             logger.error(f"Error downloading font {font_url}: {str(e)}")
 
     error_msg = None
-    if not font_details_list:
+    if not font_details_list and not error_msg:
         if cors_blocked:
             error_msg = "No fonts downloaded (likely due to CORS restrictions)"
         elif font_families or css_fonts or rendered_fonts:
@@ -415,7 +415,6 @@ async def upload_font(request: Request, file: UploadFile = File(...), current_us
             "error": f"Error processing font: {str(e)}"
         })
 
-
 @app.get("/fetch-fonts", response_class=RedirectResponse)
 async def get_fetch_fonts_redirect():
     return RedirectResponse(url="/", status_code=303)
@@ -441,24 +440,25 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
             "website_url": normalized_url,
             "company": company,
             "total_fonts": len(font_details_list),
-            "font_details_list": font_details_list
+            "font_details_list": font_details_list,
+            "error": error_msg
         }
         save_font_data("fetched", result)
 
-        if not font_details_list:
+        # Wrap result in a list to match bulk_results structure
+        results = [result]
+
+        if not font_details_list and error_msg:
             logger.warning(f"No fonts found on {normalized_url}")
             return templates.TemplateResponse("main.html", {
                 "request": request,
-                "error": error_msg or f"No fonts found on {normalized_url}. The website may use system fonts, embedded fonts, or have CORS restrictions."
+                "bulk_results": results  # Use bulk_results for consistency
             })
 
         logger.info(f"Successfully fetched {len(font_details_list)} fonts from {normalized_url}")
         return templates.TemplateResponse("main.html", {
             "request": request,
-            "font_details_list": font_details_list,
-            "website_url": normalized_url,
-            "company": company,
-            "total_fonts": len(font_details_list)
+            "bulk_results": results  # Use bulk_results for consistency
         })
     except ValueError as e:
         logger.error(f"Invalid URL: {str(e)}")
@@ -473,15 +473,13 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
             "error": f"Error fetching fonts: {str(e)}"
         })
 
-
 @app.get("/upload-file", response_class=RedirectResponse)
 async def get_upload_file_redirect():
     return RedirectResponse(url="/", status_code=303)
 
 
 @app.post("/upload-file", response_class=HTMLResponse)
-async def upload_file(request: Request, file: UploadFile = File(...), batch_size: int = Form(200),
-                      current_user: str = Depends(get_current_user)):
+async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
     if not current_user:
         logger.warning("No valid user session, redirecting to login")
         return templates.TemplateResponse("login.html", {
@@ -524,55 +522,49 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
                 "error": "File must contain columns for company and website (e.g., 'Company', 'Website', 'URL')."
             })
 
-        existing_data = {"bulk_fetched": []}
-        processed_urls = set()
-        if os.path.exists("font_data.json"):
-            with open("font_data.json", "r") as f:
-                existing_data = json.load(f)
-                processed_urls = {r["website_url"] for r in existing_data.get("bulk_fetched", [])}
-
-        queue = [(row[company_col].strip(), row[website_col].strip()) for _, row in df.iterrows() if
-                 row[website_col].strip() not in processed_urls]
-        bulk_results = existing_data.get("bulk_fetched", [])
-
+        # Extract all URLs into a single list without checking for duplicates
+        queue = [(row[company_col].strip(), row[website_col].strip()) for _, row in df.iterrows()]
         logger.info(f"Total URLs to process: {len(queue)}")
 
-        async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
-            tasks = []
-            for company, website in queue[:batch_size]:
+        # Process URLs concurrently with a semaphore
+        async def process_url(company: str, website: str, session: ClientSession, semaphore: asyncio.Semaphore):
+            async with semaphore:
                 try:
                     normalized_url = normalize_url(website)
-                    tasks.append(fetch_fonts_from_url(normalized_url, session))
+                    font_details_list, error_msg = await fetch_fonts_from_url(normalized_url, session)
+                    return {
+                        "company": company,
+                        "website_url": normalized_url,
+                        "total_fonts": len(font_details_list),
+                        "font_details_list": font_details_list,
+                        "error": error_msg
+                    }
                 except ValueError as e:
-                    bulk_results.append({
+                    return {
                         "company": company,
                         "website_url": website,
                         "total_fonts": 0,
                         "font_details_list": [],
                         "error": f"Invalid URL: {str(e)}"
-                    })
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for (company, website), result in zip(queue[:batch_size], results):
-                if isinstance(result, Exception):
-                    bulk_results.append({
+                    }
+                except Exception as e:
+                    return {
                         "company": company,
                         "website_url": website,
                         "total_fonts": 0,
                         "font_details_list": [],
-                        "error": f"Error: {str(result)}"
-                    })
-                else:
-                    font_details_list, error_msg = result
-                    bulk_results.append({
-                        "company": company,
-                        "website_url": normalize_url(website),
-                        "total_fonts": len(font_details_list),
-                        "font_details_list": font_details_list,
-                        "error": error_msg
-                    })
+                        "error": f"Error: {str(e)}"
+                    }
 
+        async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
+            semaphore = asyncio.Semaphore(10)  # Limit to 10 concurrent requests
+            tasks = [process_url(company, website, session, semaphore) for company, website in queue]
+            bulk_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Filter out any exceptions and ensure results are in the correct format
+            bulk_results = [result for result in bulk_results if isinstance(result, dict)]
+
+        # Save all results to font_data.json
         save_font_data("bulk_fetched", bulk_results)
         logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
 
@@ -586,9 +578,8 @@ async def upload_file(request: Request, file: UploadFile = File(...), batch_size
         return templates.TemplateResponse("main.html", {
             "request": request,
             "error": f"Error processing file: {str(e)}",
-            "bulk_results": existing_data.get("bulk_fetched", [])
+            "bulk_results": []
         })
-
 
 @app.get("/download-font-data", response_class=StreamingResponse)
 async def download_font_data(request: Request, current_user: str = Depends(get_current_user)):
@@ -627,7 +618,7 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
                 font_details.get("full_name", "Unknown"),
                 font_details.get("family", "Unknown"),
                 font_details.get("subfamily", "Unknown"),
-                font_details.get("weight", "Unknown"),
+                font_details.get("weight", "System: Unknown"),
                 font_details.get("designer", "Unknown"),
                 font_details.get("manufacturer", "Unknown"),
                 font_details.get("copyright", "Unknown"),
@@ -672,7 +663,7 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
                     "N/A",
                     "N/A",
                     "N/A",
-                    result.get("license_type", "Unknown"),
+                    "N/A",
                     result.get("error", "-")
                 ])
             else:
@@ -709,7 +700,6 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
             "request": request,
             "error": f"Error generating Excel file: {str(e)}"
         })
-
 
 @app.post("/clear-font-data", response_class=HTMLResponse)
 async def clear_font_data(request: Request, current_user: str = Depends(get_current_user)):
