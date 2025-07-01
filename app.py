@@ -199,7 +199,7 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
             page.on("response", check_response)
 
             try:
-                await page.goto(url, wait_until="load", timeout=15000)
+                await page.goto(url, wait_until="load", timeout=10000)
                 await page.evaluate("document.fonts.ready")
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await page.wait_for_timeout(5000)
