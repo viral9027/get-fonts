@@ -1,24 +1,25 @@
 import asyncio
-import logging
-import resource
+import hashlib
 import json
+import logging
 import os
+import resource
+import secrets
+import time
+from io import BytesIO
+from urllib.parse import urlparse, urlunparse
+
+import aiohttp
+import openpyxl
+import pandas as pd
+from aiohttp import ClientSession, ClientTimeout
 from fastapi import FastAPI, File, UploadFile, Form, Depends, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
 from fontTools.ttLib import TTFont
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-import aiohttp
-import hashlib
-import secrets
-import time
-from urllib.parse import urlparse, urlunparse
-import pandas as pd
-import openpyxl
-from io import BytesIO
-from aiohttp import ClientSession, ClientTimeout
+from pydantic import BaseModel
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -415,6 +416,7 @@ async def upload_font(request: Request, file: UploadFile = File(...), current_us
             "error": f"Error processing font: {str(e)}"
         })
 
+
 @app.get("/fetch-fonts", response_class=RedirectResponse)
 async def get_fetch_fonts_redirect():
     return RedirectResponse(url="/", status_code=303)
@@ -473,10 +475,13 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
             "error": f"Error fetching fonts: {str(e)}"
         })
 
+
 @app.get("/upload-file", response_class=RedirectResponse)
 async def get_upload_file_redirect():
     return RedirectResponse(url="/", status_code=303)
 
+
+# [Previous imports and setup remain unchanged]
 
 @app.post("/upload-file", response_class=HTMLResponse)
 async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
@@ -522,22 +527,31 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 "error": "File must contain columns for company and website (e.g., 'Company', 'Website', 'URL')."
             })
 
-        # Extract all URLs into a single list without checking for duplicates
+        # Extract all URLs into a single list
         queue = [(row[company_col].strip(), row[website_col].strip()) for _, row in df.iterrows()]
         logger.info(f"Total URLs to process: {len(queue)}")
 
-        # Process URLs concurrently with a semaphore
+        # Process URLs concurrently with a reduced semaphore
         async def process_url(company: str, website: str, session: ClientSession, semaphore: asyncio.Semaphore):
             async with semaphore:
                 try:
                     normalized_url = normalize_url(website)
-                    font_details_list, error_msg = await fetch_fonts_from_url(normalized_url, session)
+                    # Use asyncio.wait_for for timeout in Python < 3.11
+                    font_details_list, error_msg = await asyncio.wait_for(fetch_fonts_from_url(normalized_url, session), timeout=30)
                     return {
                         "company": company,
                         "website_url": normalized_url,
                         "total_fonts": len(font_details_list),
                         "font_details_list": font_details_list,
                         "error": error_msg
+                    }
+                except asyncio.TimeoutError:
+                    return {
+                        "company": company,
+                        "website_url": website,
+                        "total_fonts": 0,
+                        "font_details_list": [],
+                        "error": "Timeout: Processing took too long"
                     }
                 except ValueError as e:
                     return {
@@ -556,8 +570,8 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": f"Error: {str(e)}"
                     }
 
-        async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
-            semaphore = asyncio.Semaphore(10)  # Limit to 10 concurrent requests
+        async with aiohttp.ClientSession(timeout=ClientTimeout(total=15)) as session:
+            semaphore = asyncio.Semaphore(5)  # Reduced to 5 concurrent requests
             tasks = [process_url(company, website, session, semaphore) for company, website in queue]
             bulk_results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -580,6 +594,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
             "error": f"Error processing file: {str(e)}",
             "bulk_results": []
         })
+
 
 @app.get("/download-font-data", response_class=StreamingResponse)
 async def download_font_data(request: Request, current_user: str = Depends(get_current_user)):
@@ -701,6 +716,7 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
             "error": f"Error generating Excel file: {str(e)}"
         })
 
+
 @app.post("/clear-font-data", response_class=HTMLResponse)
 async def clear_font_data(request: Request, current_user: str = Depends(get_current_user)):
     try:
@@ -743,6 +759,8 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
             "error_type": type(e).__name__
         })
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("app:app", host="0.0.0.0", port=8000, workers=3)
