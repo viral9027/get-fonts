@@ -571,7 +571,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                     }
 
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=15)) as session:
-            semaphore = asyncio.Semaphore(5)  # Reduced to 5 concurrent requests
+            semaphore = asyncio.Semaphore(2)  # Reduced to 5 concurrent requests
             tasks = [process_url(company, website, session, semaphore) for company, website in queue]
             bulk_results = await asyncio.gather(*tasks, return_exceptions=True)
 
