@@ -36,7 +36,6 @@ RUN pip install --no-cache-dir gunicorn==22.0.0
 
 # Copy the rest of the application code
 COPY . .
-RUN ulimit -n 4096 && ulimit -u 4096
 # Expose the port Railway will use
 EXPOSE 5000
 
