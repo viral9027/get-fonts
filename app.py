@@ -31,7 +31,7 @@ try:
     resource.setrlimit(resource.RLIMIT_NOFILE, (4096, hard_limit))
     logger.info(f"Updated file descriptor limit: {resource.getrlimit(resource.RLIMIT_NOFILE)}")
 except Exception as e:
-    logger.warning(f"Failed to increase file descriptor limit: {str(e)}")
+    logger.error(f"Failed to increase file descriptor limit: {str(e)}")
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -47,7 +47,6 @@ users_db = {
 # File-based session store
 SESSION_FILE = "sessions.json"
 
-
 def load_sessions():
     try:
         if os.path.exists(SESSION_FILE):
@@ -58,7 +57,6 @@ def load_sessions():
         logger.error(f"Error loading sessions: {str(e)}")
         return {}
 
-
 def save_sessions(sessions):
     try:
         with open(SESSION_FILE, "w") as f:
@@ -66,11 +64,9 @@ def save_sessions(sessions):
     except Exception as e:
         logger.error(f"Error saving sessions: {str(e)}")
 
-
 class LoginData(BaseModel):
     email: str
     password: str
-
 
 def get_current_user(request: Request):
     session_id = request.cookies.get("session_id")
@@ -91,7 +87,6 @@ def get_current_user(request: Request):
     logger.info(f"Session valid for user: {session_data['email']}")
     return session_data["email"]
 
-
 def normalize_url(url: str) -> str:
     url = url.strip()
     if not url.startswith(('http://', 'https://')):
@@ -108,12 +103,10 @@ def normalize_url(url: str) -> str:
         parsed.fragment
     ))
 
-
 def extract_company_from_url(url: str) -> str:
     parsed = urlparse(url)
     domain = parsed.netloc.lower().replace("www.", "")
     return ' '.join(word.capitalize() for word in domain.split('.')[0].split('-'))
-
 
 def save_font_data(data_type: str, data: dict):
     try:
@@ -127,13 +120,12 @@ def save_font_data(data_type: str, data: dict):
         elif data_type == "fetched":
             existing_data["fetched_fonts"].append(data)
         elif data_type == "bulk_fetched":
-            existing_data["bulk_fetched"] = data  # Overwrite with new data
+            existing_data["bulk_fetched"] = data
 
         with open("font_data.json", "w") as f:
             json.dump(existing_data, f, indent=4)
     except Exception as e:
         logger.error(f"Error saving font data: {str(e)}")
-
 
 def extract_font_details(font: TTFont):
     name_table = font["name"]
@@ -158,7 +150,6 @@ def extract_font_details(font: TTFont):
         "weight": weight
     }
 
-
 async def fetch_fonts_from_url(url: str, session: ClientSession):
     font_details_list = []
     fonts = []
@@ -167,78 +158,106 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
     css_fonts = []
     rendered_fonts = []
 
-    async with async_playwright() as p:
-        browser = None
-        try:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-gpu'])
-            context = await browser.new_context(
-                viewport={'width': 1280, 'height': 720},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
+    max_retries = 2
+    retry_count = 0
 
-            await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image",
-                                                                                                    "media"] else route.continue_())
-
-            async def capture_fonts(request):
-                if request.resource_type == "font":
-                    font_url = request.url.lower()
-                    logger.info(f"Captured font request: {font_url}")
-                    if any(font_url.endswith(ext) for ext in ['.ttf', '.otf', '.woff', '.woff2', '.eot', '.ttc']):
-                        fonts.append(request.url)
-                    else:
-                        logger.info(f"Skipping unsupported font format: {font_url}")
-
-            async def check_response(response):
-                if response.request.resource_type == "font":
-                    logger.info(f"Font response: {response.url} - Status: {response.status}")
-                    if response.status in [403, 401]:
-                        nonlocal cors_blocked
-                        cors_blocked = True
-
-            page.on("request", capture_fonts)
-            page.on("response", check_response)
-
+    while retry_count < max_retries:
+        async with async_playwright() as p:
+            browser = None
             try:
-                await page.goto(url, wait_until="load", timeout=10000)
-                await page.evaluate("document.fonts.ready")
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(5000)
-                font_families = await page.evaluate("""
-                    Array.from(document.fonts).map(font => ({
-                        family: font.family,
-                        status: font.status
-                    }))
-                """)
-                logger.info(f"Detected fonts via document.fonts: {font_families}")
-                css_fonts = await page.evaluate("""
-                    Array.from(document.styleSheets).flatMap(sheet => {
-                        try {
-                            return Array.from(sheet.cssRules)
-                                .filter(rule => rule.type === CSSRule.FONT_FACE_RULE)
-                                .map(rule => ({
-                                    family: rule.style.getPropertyValue('font-family'),
-                                    src: rule.style.getPropertyValue('src')
-                                }));
-                        } catch (e) {
-                            return [];
-                        }
-                    })
-                """)
-                logger.info(f"Detected font-face rules: {css_fonts}")
-                rendered_fonts = await page.evaluate("""
-                    Array.from(document.querySelectorAll('*'))
-                        .map(el => window.getComputedStyle(el).fontFamily)
-                        .filter((v, i, a) => v && a.indexOf(v) === i)
-                """)
-                logger.info(f"Detected rendered font families: {rendered_fonts}")
-            except PlaywrightTimeoutError:
-                logger.warning(f"Timeout navigating {url}. Fonts may still be captured.")
+                logger.info(f"Attempt {retry_count + 1}/{max_retries} to launch Chromium for URL: {url}")
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-gpu', '--headless=new']
+                )
+                logger.info(f"Chromium launched successfully for {url}")
+                context = await browser.new_context(
+                    viewport={'width': 1280, 'height': 720},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                    no_viewport=False,
+                    bypass_csp=True,
+                    ignore_https_errors=True
+                )
+                logger.info(f"Browser context created for {url}")
+                page = await context.new_page()
+
+                await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media"] else route.continue_())
+
+                async def capture_fonts(request):
+                    if request.resource_type == "font":
+                        font_url = request.url.lower()
+                        logger.info(f"Captured font request: {font_url}")
+                        if any(font_url.endswith(ext) for ext in ['.ttf', '.otf', '.woff', '.woff2', '.eot', '.ttc']):
+                            fonts.append(request.url)
+                        else:
+                            logger.info(f"Skipping unsupported font format: {font_url}")
+
+                async def check_response(response):
+                    if response.request.resource_type == "font":
+                        logger.info(f"Font response: {response.url} - Status: {response.status}")
+                        if response.status in [403, 401]:
+                            nonlocal cors_blocked
+                            cors_blocked = True
+
+                page.on("request", capture_fonts)
+                page.on("response", check_response)
+
+                try:
+                    logger.info(f"Navigating to {url}")
+                    await page.goto(url, wait_until="load", timeout=30000)
+                    logger.info(f"Navigation to {url} successful")
+                    await page.evaluate("document.fonts.ready")
+                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    await page.wait_for_timeout(5000)
+                    font_families = await page.evaluate("""
+                        Array.from(document.fonts).map(font => ({
+                            family: font.family,
+                            status: font.status
+                        }))
+                    """)
+                    logger.info(f"Detected fonts via document.fonts: {font_families}")
+                    css_fonts = await page.evaluate("""
+                        Array.from(document.styleSheets).flatMap(sheet => {
+                            try {
+                                return Array.from(sheet.cssRules)
+                                    .filter(rule => rule.type === CSSRule.FONT_FACE_RULE)
+                                    .map(rule => ({
+                                        family: rule.style.getPropertyValue('font-family'),
+                                        src: rule.style.getPropertyValue('src')
+                                    }));
+                            } catch (e) {
+                                return [];
+                            }
+                        })
+                    """)
+                    logger.info(f"Detected font-face rules: {css_fonts}")
+                    rendered_fonts = await page.evaluate("""
+                        Array.from(document.querySelectorAll('*'))
+                            .map(el => window.getComputedStyle(el).fontFamily)
+                            .filter((v, i, a) => v && a.indexOf(v) === i)
+                    """)
+                    logger.info(f"Detected rendered font families: {rendered_fonts}")
+                    break  # Success, exit retry loop
+                except PlaywrightTimeoutError:
+                    logger.warning(f"Timeout navigating {url} on attempt {retry_count + 1}. Fonts may still be captured.")
+                    retry_count += 1
+                except Exception as e:
+                    logger.error(f"Navigation error for {url} on attempt {retry_count + 1}: {str(e)}", exc_info=True)
+                    retry_count += 1
+            except (OSError, ConnectionError) as e:
+                logger.error(f"Failed to launch browser for {url} on attempt {retry_count + 1}: {str(e)}", exc_info=True)
+                retry_count += 1
             except Exception as e:
-                logger.error(f"Navigation error for {url}: {str(e)}")
-        finally:
-            if browser:
-                await browser.close()
+                logger.error(f"Unexpected error launching browser for {url} on attempt {retry_count + 1}: {str(e)}", exc_info=True)
+                retry_count += 1
+            finally:
+                if browser:
+                    await browser.close()
+                    logger.info(f"Browser closed for {url}")
+
+    if retry_count >= max_retries:
+        logger.error(f"Failed to process {url} after {max_retries} attempts")
+        return [], f"Failed to process URL after {max_retries} attempts"
 
     if not fonts:
         error_msg = "No downloadable fonts found"
@@ -257,6 +276,7 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
                 "Referer": url
             }
+            logger.info(f"Downloading font: {font_url}")
             async with session.get(font_url, timeout=ClientTimeout(total=10), headers=headers) as response:
                 if response.status != 200:
                     logger.warning(f"Failed to download font {font_url}: HTTP {response.status}")
@@ -284,7 +304,7 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
             logger.error(f"Error downloading font {font_url}: {str(e)}")
 
     error_msg = None
-    if not font_details_list and not error_msg:
+    if not font_details_list:
         if cors_blocked:
             error_msg = "No fonts downloaded (likely due to CORS restrictions)"
         elif font_families or css_fonts or rendered_fonts:
@@ -292,18 +312,16 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
         else:
             error_msg = "No fonts downloaded (no fonts detected or unsupported formats)"
 
+    logger.info(f"Completed font fetching for {url}: {len(font_details_list)} fonts found")
     return font_details_list, error_msg
-
 
 @app.get("/", response_class=HTMLResponse)
 async def get_login(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
 
-
 @app.get("/login", response_class=RedirectResponse)
 async def get_login_redirect():
     return RedirectResponse(url="/", status_code=303)
-
 
 @app.post("/login", response_class=HTMLResponse)
 async def login(response: Response, request: Request, email: str = Form(""), password: str = Form("")):
@@ -329,7 +347,6 @@ async def login(response: Response, request: Request, email: str = Form(""), pas
     response.set_cookie(key="session_id", value=session_id, httponly=True, secure=False, samesite="Lax")
     return response
 
-
 @app.get("/main", response_class=HTMLResponse)
 async def get_main(request: Request, current_user: str = Depends(get_current_user)):
     if not current_user:
@@ -340,7 +357,6 @@ async def get_main(request: Request, current_user: str = Depends(get_current_use
         })
     logger.info(f"Rendering main page for user: {current_user}")
     return templates.TemplateResponse("main.html", {"request": request})
-
 
 @app.get("/logout", response_class=RedirectResponse)
 async def logout(request: Request, response: Response):
@@ -354,11 +370,9 @@ async def logout(request: Request, response: Response):
     response.delete_cookie("session_id")
     return response
 
-
 @app.get("/upload-font", response_class=RedirectResponse)
 async def get_upload_font_redirect():
     return RedirectResponse(url="/", status_code=303)
-
 
 @app.post("/upload-font", response_class=HTMLResponse)
 async def upload_font(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
@@ -416,11 +430,9 @@ async def upload_font(request: Request, file: UploadFile = File(...), current_us
             "error": f"Error processing font: {str(e)}"
         })
 
-
 @app.get("/fetch-fonts", response_class=RedirectResponse)
 async def get_fetch_fonts_redirect():
     return RedirectResponse(url="/", status_code=303)
-
 
 @app.post("/fetch-fonts", response_class=HTMLResponse)
 async def fetch_fonts(request: Request, url: str = Form(...), current_user: str = Depends(get_current_user)):
@@ -447,20 +459,22 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
         }
         save_font_data("fetched", result)
 
-        # Wrap result in a list to match bulk_results structure
         results = [result]
 
+        logger.info(f"Fetch result for {normalized_url}: {len(font_details_list)} fonts, error: {error_msg}")
         if not font_details_list and error_msg:
-            logger.warning(f"No fonts found on {normalized_url}")
+            logger.warning(f"No fonts found on {normalized_url}: {error_msg}")
             return templates.TemplateResponse("main.html", {
                 "request": request,
-                "bulk_results": results  # Use bulk_results for consistency
+                "bulk_results": results,
+                "error": error_msg
             })
 
         logger.info(f"Successfully fetched {len(font_details_list)} fonts from {normalized_url}")
         return templates.TemplateResponse("main.html", {
             "request": request,
-            "bulk_results": results  # Use bulk_results for consistency
+            "bulk_results": results,
+            "message": f"Successfully fetched {len(font_details_list)} fonts from {normalized_url}"
         })
     except ValueError as e:
         logger.error(f"Invalid URL: {str(e)}")
@@ -469,19 +483,15 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
             "error": f"Invalid URL: {str(e)}"
         })
     except Exception as e:
-        logger.error(f"Error fetching fonts from {url}: {str(e)}")
+        logger.error(f"Error fetching fonts from {url}: {str(e)}", exc_info=True)
         return templates.TemplateResponse("main.html", {
             "request": request,
             "error": f"Error fetching fonts: {str(e)}"
         })
 
-
 @app.get("/upload-file", response_class=RedirectResponse)
 async def get_upload_file_redirect():
     return RedirectResponse(url="/", status_code=303)
-
-
-# [Previous imports and setup remain unchanged]
 
 @app.post("/upload-file", response_class=HTMLResponse)
 async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)):
@@ -507,8 +517,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
             f.write(content)
 
         try:
-            df = pd.read_csv(temp_file_path) if file.filename.endswith('.csv') else pd.read_excel(temp_file_path,
-                                                                                                  engine='openpyxl')
+            df = pd.read_csv(temp_file_path) if file.filename.endswith('.csv') else pd.read_excel(temp_file_path, engine='openpyxl')
         finally:
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
@@ -527,16 +536,13 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 "error": "File must contain columns for company and website (e.g., 'Company', 'Website', 'URL')."
             })
 
-        # Extract all URLs into a single list
         queue = [(row[company_col].strip(), row[website_col].strip()) for _, row in df.iterrows()]
         logger.info(f"Total URLs to process: {len(queue)}")
 
-        # Process URLs concurrently with a reduced semaphore
         async def process_url(company: str, website: str, session: ClientSession, semaphore: asyncio.Semaphore):
             async with semaphore:
                 try:
                     normalized_url = normalize_url(website)
-                    # Use asyncio.wait_for for timeout in Python < 3.11
                     font_details_list, error_msg = await asyncio.wait_for(fetch_fonts_from_url(normalized_url, session), timeout=30)
                     return {
                         "company": company,
@@ -571,14 +577,12 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                     }
 
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=15)) as session:
-            semaphore = asyncio.Semaphore(2)  # Reduced to 5 concurrent requests
+            semaphore = asyncio.Semaphore(1)
             tasks = [process_url(company, website, session, semaphore) for company, website in queue]
             bulk_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Filter out any exceptions and ensure results are in the correct format
             bulk_results = [result for result in bulk_results if isinstance(result, dict)]
 
-        # Save all results to font_data.json
         save_font_data("bulk_fetched", bulk_results)
         logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
 
@@ -594,7 +598,6 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
             "error": f"Error processing file: {str(e)}",
             "bulk_results": []
         })
-
 
 @app.get("/download-font-data", response_class=StreamingResponse)
 async def download_font_data(request: Request, current_user: str = Depends(get_current_user)):
@@ -633,7 +636,7 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
                 font_details.get("full_name", "Unknown"),
                 font_details.get("family", "Unknown"),
                 font_details.get("subfamily", "Unknown"),
-                font_details.get("weight", "System: Unknown"),
+                font_details.get("weight", "Unknown"),
                 font_details.get("designer", "Unknown"),
                 font_details.get("manufacturer", "Unknown"),
                 font_details.get("copyright", "Unknown"),
@@ -716,7 +719,6 @@ async def download_font_data(request: Request, current_user: str = Depends(get_c
             "error": f"Error generating Excel file: {str(e)}"
         })
 
-
 @app.post("/clear-font-data", response_class=HTMLResponse)
 async def clear_font_data(request: Request, current_user: str = Depends(get_current_user)):
     try:
@@ -759,8 +761,6 @@ async def clear_font_data(request: Request, current_user: str = Depends(get_curr
             "error_type": type(e).__name__
         })
 
-
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, workers=3)
+    uvicorn.run("app:app", host="0.0.0.0", port=5000, workers=3)

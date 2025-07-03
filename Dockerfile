@@ -36,9 +36,10 @@ RUN pip install --no-cache-dir gunicorn==22.0.0
 
 # Copy the rest of the application code
 COPY . .
-
+RUN ulimit -n 4096 && ulimit -u 4096
 # Expose the port Railway will use
 EXPOSE 5000
 
 # Command to run the FastAPI app
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
+#CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "5000", "--workers", "3"]
