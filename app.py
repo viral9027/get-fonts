@@ -137,6 +137,8 @@ def extract_font_details(font: TTFont):
             except:
                 details[record.nameID] = record.string.decode("latin-1", errors="ignore")
 
+    weight = str
+
     weight = str(font["OS/2"].usWeightClass) if "OS/2" in font else "Unknown"
     return {
         "family": details.get(1, "Unknown"),
@@ -511,17 +513,21 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 "error": "Please upload a CSV or XLSX file."
             })
 
+        # Save uploaded file temporarily
         content = await file.read()
         temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
         with open(temp_file_path, "wb") as f:
             f.write(content)
 
         try:
+            # Read the file
             df = pd.read_csv(temp_file_path) if file.filename.endswith('.csv') else pd.read_excel(temp_file_path, engine='openpyxl')
         finally:
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
+                logger.info(f"Removed temporary file: {temp_file_path}")
 
+        # Identify columns for company and website
         possible_columns = {
             "company": ["company", "Company", "COMPANY", "name", "Name"],
             "website": ["website", "Website", "WEBSITE", "url", "URL", "site", "Site"]
@@ -536,6 +542,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 "error": "File must contain columns for company and website (e.g., 'Company', 'Website', 'URL')."
             })
 
+        # Prepare queue of URLs to process
         queue = [(row[company_col].strip(), row[website_col].strip()) for _, row in df.iterrows()]
         logger.info(f"Total URLs to process: {len(queue)}")
 
@@ -543,7 +550,10 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
             async with semaphore:
                 try:
                     normalized_url = normalize_url(website)
-                    font_details_list, error_msg = await asyncio.wait_for(fetch_fonts_from_url(normalized_url, session), timeout=30)
+                    font_details_list, error_msg = await asyncio.wait_for(
+                        fetch_fonts_from_url(normalized_url, session), timeout=30
+                    )
+                    logger.info(f"Processed {normalized_url}: {len(font_details_list)} fonts found")
                     return {
                         "company": company,
                         "website_url": normalized_url,
@@ -552,6 +562,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": error_msg
                     }
                 except asyncio.TimeoutError:
+                    logger.error(f"Timeout processing {website}")
                     return {
                         "company": company,
                         "website_url": website,
@@ -560,6 +571,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": "Timeout: Processing took too long"
                     }
                 except ValueError as e:
+                    logger.error(f"Invalid URL {website}: {str(e)}")
                     return {
                         "company": company,
                         "website_url": website,
@@ -568,6 +580,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": f"Invalid URL: {str(e)}"
                     }
                 except Exception as e:
+                    logger.error(f"Error processing {website}: {str(e)}")
                     return {
                         "company": company,
                         "website_url": website,
@@ -576,13 +589,17 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": f"Error: {str(e)}"
                     }
 
+        # Process URLs with controlled concurrency
+        max_concurrent_tasks = 5  # Adjust based on server capacity
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=15)) as session:
-            semaphore = asyncio.Semaphore(1)
+            semaphore = asyncio.Semaphore(max_concurrent_tasks)
             tasks = [process_url(company, website, session, semaphore) for company, website in queue]
             bulk_results = await asyncio.gather(*tasks, return_exceptions=True)
 
+            # Filter out any exceptions and keep only valid results
             bulk_results = [result for result in bulk_results if isinstance(result, dict)]
 
+        # Save results
         save_font_data("bulk_fetched", bulk_results)
         logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
 
@@ -592,7 +609,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
             "message": f"Processed {len(queue)} URLs"
         })
     except Exception as e:
-        logger.error(f"Error processing file: {str(e)}")
+        logger.error(f"Error processing file {file.filename}: {str(e)}")
         return templates.TemplateResponse("main.html", {
             "request": request,
             "error": f"Error processing file: {str(e)}",
