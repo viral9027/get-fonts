@@ -18,8 +18,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fontTools.ttLib import TTFont
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError, Error as PlaywrightError
 from pydantic import BaseModel
+import psutil
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -137,8 +138,6 @@ def extract_font_details(font: TTFont):
             except:
                 details[record.nameID] = record.string.decode("latin-1", errors="ignore")
 
-    weight = str
-
     weight = str(font["OS/2"].usWeightClass) if "OS/2" in font else "Unknown"
     return {
         "family": details.get(1, "Unknown"),
@@ -160,57 +159,75 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
     css_fonts = []
     rendered_fonts = []
 
-    max_retries = 2
-    retry_count = 0
+    max_retries = 3  # Increased retries
+    retry_delay = 2  # Seconds between retries
 
-    while retry_count < max_retries:
-        async with async_playwright() as p:
-            browser = None
-            try:
-                logger.info(f"Attempt {retry_count + 1}/{max_retries} to launch Chromium for URL: {url}")
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=['--no-sandbox', '--disable-gpu', '--headless=new']
-                )
-                logger.info(f"Chromium launched successfully for {url}")
-                context = await browser.new_context(
-                    viewport={'width': 1280, 'height': 720},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-                    no_viewport=False,
-                    bypass_csp=True,
-                    ignore_https_errors=True
-                )
-                logger.info(f"Browser context created for {url}")
-                page = await context.new_page()
+    async with async_playwright() as p:
+        logger.info(f"Launching Chromium for URL: {url}")
+        # Log resource usage
+        process = psutil.Process()
+        mem = process.memory_info().rss / 1024 / 1024  # MB
+        cpu = process.cpu_percent()
+        logger.info(f"Resource usage before browser launch: Memory={mem:.2f}MB, CPU={cpu:.2f}%")
 
-                await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media"] else route.continue_())
-
-                async def capture_fonts(request):
-                    if request.resource_type == "font":
-                        font_url = request.url.lower()
-                        logger.info(f"Captured font request: {font_url}")
-                        if any(font_url.endswith(ext) for ext in ['.ttf', '.otf', '.woff', '.woff2', '.eot', '.ttc']):
-                            fonts.append(request.url)
-                        else:
-                            logger.info(f"Skipping unsupported font format: {font_url}")
-
-                async def check_response(response):
-                    if response.request.resource_type == "font":
-                        logger.info(f"Font response: {response.url} - Status: {response.status}")
-                        if response.status in [403, 401]:
-                            nonlocal cors_blocked
-                            cors_blocked = True
-
-                page.on("request", capture_fonts)
-                page.on("response", check_response)
-
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-gpu', '--headless=new']
+        )
+        logger.info(f"Chromium launched successfully for {url}")
+        try:
+            for retry_count in range(max_retries):
+                context = None
+                page = None
                 try:
-                    logger.info(f"Navigating to {url}")
-                    await page.goto(url, wait_until="load", timeout=30000)
-                    logger.info(f"Navigation to {url} successful")
+                    if not browser.is_connected():
+                        logger.error(f"Browser disconnected before attempt {retry_count + 1} for {url}")
+                        continue
+
+                    context = await browser.new_context(
+                        viewport={'width': 1280, 'height': 720},
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                        no_viewport=False,
+                        bypass_csp=True,
+                        ignore_https_errors=True
+                    )
+                    logger.info(f"Browser context created for attempt {retry_count + 1} at {url}")
+                    page = await context.new_page()
+
+                    # Log console and page errors
+                    page.on("console", lambda msg: logger.info(f"Console message from {url}: {msg.text}"))
+                    page.on("pageerror", lambda error: logger.error(f"Page error at {url}: {str(error)}"))
+
+                    # Abort non-essential requests
+                    await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media"] else route.continue_())
+
+                    async def capture_fonts(request):
+                        if request.resource_type == "font":
+                            font_url = request.url.lower()
+                            logger.info(f"Captured font request: {font_url}")
+                            if any(font_url.endswith(ext) for ext in ['.ttf', '.otf', '.woff', '.woff2', '.eot', '.ttc']):
+                                fonts.append(request.url)
+                            else:
+                                logger.info(f"Skipping unsupported font format: {font_url}")
+
+                    async def check_response(response):
+                        if response.request.resource_type == "font":
+                            logger.info(f"Font response: {response.url} - Status: {response.status}")
+                            if response.status in [403, 401]:
+                                logger.warning(f"CORS or access issue for font: {response.url}")
+                                nonlocal cors_blocked
+                                cors_blocked = True
+
+                    page.on("request", capture_fonts)
+                    page.on("response", check_response)
+
+                    logger.info(f"Navigating to {url} (attempt {retry_count + 1})")
+                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)  # Increased timeout
+                    await page.wait_for_load_state("load", timeout=10000)
                     await page.evaluate("document.fonts.ready")
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                     await page.wait_for_timeout(5000)
+
                     font_families = await page.evaluate("""
                         Array.from(document.fonts).map(font => ({
                             family: font.family,
@@ -242,24 +259,35 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
                     break  # Success, exit retry loop
                 except PlaywrightTimeoutError:
                     logger.warning(f"Timeout navigating {url} on attempt {retry_count + 1}. Fonts may still be captured.")
-                    retry_count += 1
+                except PlaywrightError as e:
+                    logger.error(f"Playwright error for {url} on attempt {retry_count + 1}: {str(e)}", exc_info=True)
+                    if "Target closed" in str(e):
+                        logger.error(f"Target closed error for {url}")
                 except Exception as e:
-                    logger.error(f"Navigation error for {url} on attempt {retry_count + 1}: {str(e)}", exc_info=True)
-                    retry_count += 1
-            except (OSError, ConnectionError) as e:
-                logger.error(f"Failed to launch browser for {url} on attempt {retry_count + 1}: {str(e)}", exc_info=True)
-                retry_count += 1
-            except Exception as e:
-                logger.error(f"Unexpected error launching browser for {url} on attempt {retry_count + 1}: {str(e)}", exc_info=True)
-                retry_count += 1
-            finally:
-                if browser:
-                    await browser.close()
-                    logger.info(f"Browser closed for {url}")
+                    logger.error(f"Unexpected error for {url} on attempt {retry_count + 1}: {str(e)}", exc_info=True)
+                finally:
+                    if page:
+                        await page.close()
+                    if context:
+                        await context.close()
+                    if retry_count < max_retries - 1:
+                        logger.info(f"Waiting {retry_delay} seconds before retrying {url}")
+                        await asyncio.sleep(retry_delay)
+        finally:
+            await browser.close()
+            logger.info(f"Browser closed for {url}")
+            # Log resource usage after closing browser
+            mem = process.memory_info().rss / 1024 / 1024  # MB
+            cpu = process.cpu_percent()
+            logger.info(f"Resource usage after browser close: Memory={mem:.2f}MB, CPU={cpu:.2f}%")
 
     if retry_count >= max_retries:
         logger.error(f"Failed to process {url} after {max_retries} attempts")
-        return [], f"Failed to process URL after {max_retries} attempts"
+        # Process any captured fonts even on failure
+        if fonts:
+            logger.info(f"Processing {len(fonts)} captured fonts despite navigation failure")
+        else:
+            return [], f"Failed to process URL after {max_retries} attempts"
 
     if not fonts:
         error_msg = "No downloadable fonts found"
@@ -279,7 +307,7 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
                 "Referer": url
             }
             logger.info(f"Downloading font: {font_url}")
-            async with session.get(font_url, timeout=ClientTimeout(total=10), headers=headers) as response:
+            async with session.get(font_url, timeout=ClientTimeout(total=15), headers=headers) as response:
                 if response.status != 200:
                     logger.warning(f"Failed to download font {font_url}: HTTP {response.status}")
                     if response.status in [403, 401]:
@@ -448,7 +476,7 @@ async def fetch_fonts(request: Request, url: str = Form(...), current_user: str 
     try:
         logger.info(f"Fetching fonts from {url} by user: {current_user}")
         normalized_url = normalize_url(url)
-        async with aiohttp.ClientSession(timeout=ClientTimeout(total=10)) as session:
+        async with aiohttp.ClientSession(timeout=ClientTimeout(total=15)) as session:
             font_details_list, error_msg = await fetch_fonts_from_url(normalized_url, session)
 
         company = extract_company_from_url(normalized_url)
@@ -513,21 +541,18 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 "error": "Please upload a CSV or XLSX file."
             })
 
-        # Save uploaded file temporarily
         content = await file.read()
         temp_file_path = f"temp_{file.filename}_{secrets.token_hex(4)}"
         with open(temp_file_path, "wb") as f:
             f.write(content)
 
         try:
-            # Read the file
             df = pd.read_csv(temp_file_path) if file.filename.endswith('.csv') else pd.read_excel(temp_file_path, engine='openpyxl')
         finally:
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
                 logger.info(f"Removed temporary file: {temp_file_path}")
 
-        # Identify columns for company and website
         possible_columns = {
             "company": ["company", "Company", "COMPANY", "name", "Name"],
             "website": ["website", "Website", "WEBSITE", "url", "URL", "site", "Site"]
@@ -542,7 +567,6 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 "error": "File must contain columns for company and website (e.g., 'Company', 'Website', 'URL')."
             })
 
-        # Prepare queue of URLs to process
         queue = [(row[company_col].strip(), row[website_col].strip()) for _, row in df.iterrows()]
         logger.info(f"Total URLs to process: {len(queue)}")
 
@@ -551,7 +575,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                 try:
                     normalized_url = normalize_url(website)
                     font_details_list, error_msg = await asyncio.wait_for(
-                        fetch_fonts_from_url(normalized_url, session), timeout=30
+                        fetch_fonts_from_url(normalized_url, session), timeout=60
                     )
                     logger.info(f"Processed {normalized_url}: {len(font_details_list)} fonts found")
                     return {
@@ -589,17 +613,14 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": f"Error: {str(e)}"
                     }
 
-        # Process URLs with controlled concurrency
-        max_concurrent_tasks = 5  # Adjust based on server capacity
+        max_concurrent_tasks = 3  # Reduced to prevent resource exhaustion
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=15)) as session:
             semaphore = asyncio.Semaphore(max_concurrent_tasks)
             tasks = [process_url(company, website, session, semaphore) for company, website in queue]
             bulk_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Filter out any exceptions and keep only valid results
             bulk_results = [result for result in bulk_results if isinstance(result, dict)]
 
-        # Save results
         save_font_data("bulk_fetched", bulk_results)
         logger.info(f"Bulk fetch completed with {len(bulk_results)} results")
 
