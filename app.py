@@ -159,7 +159,7 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
     css_fonts = []
     rendered_fonts = []
 
-    max_retries = 3  # Increased retries
+    max_retries = 1  # Increased retries
     retry_delay = 2  # Seconds between retries
 
     async with async_playwright() as p:
@@ -621,8 +621,8 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": f"Error: {str(e)}"
                     }
 
-        max_concurrent_tasks = 2  # Reduced to prevent resource exhaustion
-        async with aiohttp.ClientSession(timeout=ClientTimeout(total=15)) as session:
+        max_concurrent_tasks = 15  # Reduced to prevent resource exhaustion
+        async with aiohttp.ClientSession(timeout=ClientTimeout(total=45)) as session:
             semaphore = asyncio.Semaphore(max_concurrent_tasks)
             tasks = [process_url(company, website, session, semaphore) for company, website in queue]
             bulk_results = await asyncio.gather(*tasks, return_exceptions=True)
