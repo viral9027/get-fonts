@@ -172,7 +172,15 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
 
         browser = await p.chromium.launch(
             headless=True,
-            args=['--no-sandbox', '--disable-gpu', '--headless=new']
+            args=[
+                '--headless=new',
+                '--disable-gpu',
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-background-networking',
+                '--disable-software-rasterizer',
+                '--disable-breakpad',
+            ]
         )
         logger.info(f"Chromium launched successfully for {url}")
         try:
@@ -613,7 +621,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": f"Error: {str(e)}"
                     }
 
-        max_concurrent_tasks = 3  # Reduced to prevent resource exhaustion
+        max_concurrent_tasks = 2  # Reduced to prevent resource exhaustion
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=15)) as session:
             semaphore = asyncio.Semaphore(max_concurrent_tasks)
             tasks = [process_url(company, website, session, semaphore) for company, website in queue]
