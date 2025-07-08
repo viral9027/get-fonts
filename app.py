@@ -159,7 +159,7 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
     css_fonts = []
     rendered_fonts = []
 
-    max_retries = 1  # Increased retries
+    max_retries = 2  # Increased retries
     retry_delay = 2  # Seconds between retries
 
     async with async_playwright() as p:
