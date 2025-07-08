@@ -196,8 +196,16 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
                         viewport={'width': 1280, 'height': 720},
                         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
                         no_viewport=False,
+                        extra_http_headers={
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                            "Accept-Language": "en-US,en;q=0.5",
+                            "Sec-Fetch-Site": "none",
+                            "Sec-Fetch-Mode": "navigate",
+                            "Sec-Fetch-Dest": "document"
+                        },
                         bypass_csp=True,
-                        ignore_https_errors=True
+                        ignore_https_errors=True,
+                        java_script_enabled=True
                     )
                     logger.info(f"Browser context created for attempt {retry_count + 1} at {url}")
                     page = await context.new_page()
@@ -230,7 +238,7 @@ async def fetch_fonts_from_url(url: str, session: ClientSession):
                     page.on("response", check_response)
 
                     logger.info(f"Navigating to {url} (attempt {retry_count + 1})")
-                    await page.goto(url, wait_until="domcontentloaded", timeout=60000)  # Increased timeout
+                    await page.goto(url, wait_until="networkidle", timeout=90000)  # Increased timeout
                     await page.wait_for_load_state("load", timeout=10000)
                     await page.evaluate("document.fonts.ready")
                     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
