@@ -621,7 +621,7 @@ async def upload_file(request: Request, file: UploadFile = File(...), current_us
                         "error": f"Error: {str(e)}"
                     }
 
-        max_concurrent_tasks = 15  # Reduced to prevent resource exhaustion
+        max_concurrent_tasks = 5  # Reduced to prevent resource exhaustion
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=45)) as session:
             semaphore = asyncio.Semaphore(max_concurrent_tasks)
             tasks = [process_url(company, website, session, semaphore) for company, website in queue]
