@@ -401,7 +401,7 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
                         "error": str(e)
                     }
 
-        max_concurrent_tasks = 10
+        max_concurrent_tasks = 5
         bulk_results = []
         async with aiohttp.ClientSession(timeout=ClientTimeout(total=15), connector=aiohttp.TCPConnector(limit=50)) as session:
             async with async_playwright() as p:
